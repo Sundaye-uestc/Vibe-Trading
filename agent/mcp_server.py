@@ -3024,6 +3024,93 @@ def scan_shadow_signals(
 
 
 # ---------------------------------------------------------------------------
+# A-stock data tools (Tencent, Tonghuashun, Sina, Cninfo)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool
+def tencent_quote(codes: list[str]) -> str:
+    """Get real-time A-share quotes from Tencent Finance (HTTP, never IP-banned).
+
+    Returns price, PE(TTM), PB, market cap, float market cap, turnover rate,
+    amplitude, limit up/down, volume ratio, and PE(static). Also supports
+    indices (000001=SSE, 000300=CSI300, 399006=ChiNext) and ETFs (510050, 510300).
+    Prefer this over Eastmoney for price/valuation data — zero IP-ban risk.
+
+    Args:
+        codes: List of 6-digit A-share codes (e.g. ['688017', '600519']).
+            Max 50 per call.
+    """
+    registry = _get_registry()
+    return registry.execute("tencent_quote", {"codes": codes})
+
+
+@mcp.tool
+def ths_hot_reason(date: str | None = None) -> str:
+    """Fetch today's strongest A-share stocks with sector-attribution tags.
+
+    Tonghuashun (同花顺) editorial team manually tags each strong stock with
+    reason labels like '算力租赁+Token工厂+AI政务'. Returns ~125 stocks/day
+    with name, code, price, change%, turnover%, DDE net flow, and reason tags.
+    Zero auth, ~73ms. Use to detect emerging themes and sector rotation.
+
+    Args:
+        date: Optional date string 'YYYY-MM-DD'. Defaults to today.
+    """
+    registry = _get_registry()
+    return registry.execute("ths_hot_reason", {"date": date})
+
+
+@mcp.tool
+def hsgt_realtime(include_history: bool = False) -> str:
+    """Fetch real-time HSGT northbound capital flow minute-by-minute.
+
+    Returns ~262 data points (09:10-15:00) with cumulative HGT (沪股通) and
+    SGT (深股通) net buy amounts in 亿元. Zero auth. Also supports loading
+    locally-cached daily history.
+
+    Args:
+        include_history: If True, also return cached daily history (up to 20 days).
+    """
+    registry = _get_registry()
+    return registry.execute("hsgt_realtime", {"include_history": include_history})
+
+
+@mcp.tool
+def cninfo_announcements(code: str, page_size: int = 30) -> str:
+    """Search official exchange filings (SSE/SZSE/BSE) via Cninfo (巨潮资讯网).
+
+    Returns title, type, date, and URL for each filing. Uses dynamic orgId
+    resolution (6,198 stocks mapped). Zero auth. Covers annual/interim/quarterly
+    reports, material announcements, prospectuses, and restructuring filings.
+
+    Args:
+        code: 6-digit A-share stock code (e.g. '688017', '600519').
+        page_size: Number of announcements to return (max 50). Default: 30.
+    """
+    registry = _get_registry()
+    return registry.execute("cninfo_announcements", {"code": code, "page_size": page_size})
+
+
+@mcp.tool
+def sina_financial_report(code: str, report_type: str = "lrb", num: int = 8) -> str:
+    """Fetch A-share financial statements from Sina Finance (新浪财经).
+
+    Supports three report types: 'lrb' (利润表/income statement),
+    'fzb' (资产负债表/balance sheet), 'llb' (现金流量表/cash flow statement).
+    Returns up to 8 recent periods with item values and YoY changes.
+    HTTP only, zero auth. Use for fundamental analysis and financial health checks.
+
+    Args:
+        code: 6-digit A-share stock code (e.g. '600519', '000001').
+        report_type: 'lrb' (income), 'fzb' (balance), or 'llb' (cash flow).
+        num: Number of recent periods (max 8). Default: 8.
+    """
+    registry = _get_registry()
+    return registry.execute("sina_financial_report", {"code": code, "report_type": report_type, "num": num})
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

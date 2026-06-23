@@ -34,7 +34,9 @@ per-source skill.
 | tickerall | Forex & metals (same broker MT5 feed, hosted) | Yes (`TICKERALL_API_KEY` + `TICKERALL_ACCOUNT_ID`; read-only) | Hosted API (any OS, no terminal) | data-routing (runner-internal; **explicit `source=tickerall` only**) |
 | local | User CSV/parquet on disk | No | Offline | data-routing (runner-internal) |
 | eastmoney | A-shares, HK, US equities | No (IP-throttled) | Unrestricted | data-routing |
-| sina | US equities (daily OHLCV) | No (IP-throttled) | Unrestricted | data-routing |
+| tonghuashun | A-shares (hot stocks, northbound, consensus EPS) | No | Unrestricted | a-stock-data |
+| cninfo | A-shares (SSE/SZSE/BSE filings) | No | Unrestricted | a-stock-data |
+| sina | A-shares (financial statements), US (daily OHLCV) | No (IP-throttled) | Unrestricted | data-routing |
 | stooq | US equities (daily OHLCV) | No | Unrestricted | data-routing |
 | yahoo | US, HK, Canada (TSX/TSXV) equities | No (IP-throttled) | Needs Yahoo access | data-routing |
 | finnhub | US equities | Yes (`FINNHUB_API_KEY`) | Unrestricted | data-routing |
@@ -68,12 +70,30 @@ is required only where listed (no key listed = free / no auth).
 | Market screen | `screen_market` | A-share | — |
 | Symbol search | `search_symbol` | A-share, US, HK, Canada, crypto/index/FX | — |
 | Macro / FRED series | `get_macro_series` | Macro (US/global) | `FRED_API_KEY` |
+| Real-time quotes / valuation (实时行情) | `tencent_quote` | A-share | — |
+| Hot stocks / sector attribution (热点/题材) | `ths_hot_reason` | A-share | — |
+| Northbound minute flow (北向分钟) | `hsgt_realtime` | A-share | — |
+| Exchange filings (公告原文) | `cninfo_announcements` | A-share | — |
+| Financial statements — Sina (新浪财报) | `sina_financial_report` | A-share | — |
 | iWenCai NL search (问财) | `iwencai_search` | A-share | `VIBE_TRADING_IWENCAI_KEY` |
 
 Notes:
 - `get_financial_statements` reads US statements from SEC EDGAR companyfacts
   (ticker -> CIK -> XBRL concepts) and A-share/HK statements from the Eastmoney
   datacenter report API (per-market F10 report names).
+- `tencent_quote` is the **preferred** A-share real-time quote source — HTTP-only,
+  zero auth, never IP-banned. Use it before Eastmoney for price/PE/PB/market-cap.
+- `ths_hot_reason` returns today's strongest A-share stocks with editor-curated
+  sector-attribution tags (题材归因) — the only tool that answers "why" a stock
+  is moving, not just "what" moved.
+- `hsgt_realtime` provides minute-level northbound flow (262 data points/day)
+  from Tonghuashun, more granular than `get_northbound_flow`.
+- `cninfo_announcements` searches official SSE/SZSE/BSE exchange filings with
+  full-text titles and direct PDF URLs — the primary source for A-share disclosure
+  verification.
+- `sina_financial_report` fetches clean balance/income/cash-flow statements from
+  Sina (新浪财经, HTTP, zero auth) as an alternative to the Eastmoney-backed
+  `get_financial_statements` when IP throttling is a concern.
 - `get_stock_news` routes A-share (SH/SZ/BJ) to an Eastmoney news client and
   US (.US) / HK (.HK) to a Yahoo search client; a failure on one upstream is
   returned as an error envelope, never raised, so a single bad symbol never

@@ -18,6 +18,7 @@ const PROXY_PATHS = [
   "/shadow-reports",
   "/scheduled-runs",
   "/options",
+  "/skills",
 ];
 
 export default defineConfig(({ mode }) => {

@@ -784,6 +784,7 @@ export interface DataSourceSettings {
   baostock_message: string;
   env_path: string;
   source_orders?: SourceOrderEntry[];
+  skill_data_sources: { name: string; description: string; version?: string | null }[];
 }
 
 export interface UpdateDataSourceSettingsRequest {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Database, KeyRound, Loader2, MessageSquareMore, Play, RefreshCw, RotateCcw, Save, Server, SlidersHorizontal, Square } from "lucide-react";
+import { Database, ExternalLink, KeyRound, Loader2, MessageSquareMore, Package, Play, RefreshCw, RotateCcw, Save, Server, SlidersHorizontal, Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 import { toast } from "sonner";
 import { ModelPicker } from "@/components/settings/ModelPicker";
 import { QVerisSettings } from "@/components/settings/QVerisSettings"; // QVERIS-INTEGRATION
@@ -774,6 +775,46 @@ export function Settings() {
             </div>
           </div>
         </div>
+
+        {/* Skill Data Sources */}
+        {dataSettings && dataSettings.skill_data_sources.length > 0 && (
+          <div className="mt-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Package className="h-4 w-4 text-primary" />
+              <h3 className="text-sm font-semibold">{t("settings.skillDataSourcesTitle")}</h3>
+            </div>
+            <p className="text-xs text-muted-foreground">{t("settings.skillDataSourcesDesc")}</p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {dataSettings.skill_data_sources.map((skill) => (
+                <Link
+                  key={skill.name}
+                  to={`/skills/${encodeURIComponent(skill.name)}`}
+                  className="group rounded-md border bg-muted/20 p-4 transition hover:border-primary/40 hover:bg-muted/40"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-sm font-semibold group-hover:text-primary transition-colors">
+                      {skill.name}
+                    </span>
+                    <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </div>
+                  <p className="mt-1.5 text-xs text-muted-foreground line-clamp-2">
+                    {skill.description}
+                  </p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <span className="inline-block rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                      data-source
+                    </span>
+                    {skill.version && (
+                      <span className="text-[10px] text-muted-foreground">
+                        {t("settings.skillDataSourceVersion")} {skill.version}
+                      </span>
+                    )}
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
       </form>
 
       <SourcePrioritySettings />

@@ -118,6 +118,14 @@ class SourceOrderUpdate(BaseModel):
     order: Optional[List[str]] = None
 
 
+class SkillDataSourceInfo(BaseModel):
+    """A data-source skill installed in the system."""
+
+    name: str
+    description: str
+    version: Optional[str] = None
+
+
 class DataSourceSettingsResponse(BaseModel):
     """Current data source credential settings."""
 
@@ -128,6 +136,7 @@ class DataSourceSettingsResponse(BaseModel):
     baostock_message: str
     env_path: str
     source_orders: List[SourceOrderEntry] = Field(default_factory=list)
+    skill_data_sources: List[SkillDataSourceInfo] = Field(default_factory=list)
 
 
 class UpdateDataSourceSettingsRequest(BaseModel):
@@ -464,6 +473,31 @@ def _validate_source_order_update(entry: SourceOrderUpdate) -> tuple[str, str]:
     )
 
 
+def _discover_skill_data_sources() -> List[SkillDataSourceInfo]:
+    """Discover installed skills in the "data-source" category."""
+    try:
+        from src.agent.skills import SkillsLoader
+
+        loader = SkillsLoader()
+    except Exception:
+        return []
+    results: List[SkillDataSourceInfo] = []
+    for skill in loader.skills:
+        if (skill.category or "").strip().lower() != "data-source":
+            continue
+        version = None
+        if skill.metadata:
+            version = skill.metadata.get("version")
+        results.append(
+            SkillDataSourceInfo(
+                name=skill.name,
+                description=skill.description or "",
+                version=version,
+            )
+        )
+    return results
+
+
 def _build_data_source_settings_response(
     values: Optional[Dict[str, str]] = None,
 ) -> DataSourceSettingsResponse:
@@ -491,6 +525,7 @@ def _build_data_source_settings_response(
         baostock_message=baostock_message,
         env_path=host._project_relative_path(host.ENV_PATH),
         source_orders=_build_source_orders(env_values),
+        skill_data_sources=_discover_skill_data_sources(),
     )
 
 

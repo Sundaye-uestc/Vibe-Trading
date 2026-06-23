@@ -502,6 +502,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  // Skills API
+  listSkills: () => request<SkillSummary[]>("/skills"),
+  getSkill: (name: string) =>
+    request<SkillDetailResponse>(`/skills/${encodeURIComponent(name)}`),
+
   // Alpha Zoo API
   listAlphas: (params: AlphaListParams = {}) => {
     const q = new URLSearchParams();
@@ -1381,6 +1387,22 @@ export interface UpdateGoalStatusRequest {
 export interface UpdateGoalStatusResponse {
   goal: GoalRecord;
   snapshot: GoalSnapshot;
+}
+
+// --- Skills types ---
+
+export interface SkillSummary {
+  name: string;
+  description: string;
+  category: string;
+}
+
+export interface SkillDetailResponse {
+  name: string;
+  description: string;
+  category: string;
+  body: string;
+  metadata: Record<string, unknown>;
 }
 
 // --- Alpha Zoo types ---

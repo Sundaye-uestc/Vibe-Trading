@@ -28,7 +28,8 @@
     "skipToMain": "跳转到主要内容",
     "sidebar": "Vibe-Trading 侧边栏",
     "mainNavigation": "主导航",
-    "about": "关于"
+    "about": "关于",
+    "skills": "已安装 Skill"
   },
   "runtime": {
     "monitorBadge": "交易监控",
@@ -325,6 +326,27 @@
       "night1": "夜深了，还在琢磨？",
       "night2": "我们一起把它理清。",
       "night3": "收尾前，再研究一个想法？"
+    },
+    "title": "Vibe-Trading",
+    "subtitle": "与你的专业金融智能体团队一起进行 vibe trading",
+    "describePrompt": "描述一个交易策略即可开始。",
+    "tryExample": "试试示例：",
+    "capabilities": {
+      "financeSkills": "金融技能库",
+      "swarmTeams": "群体智能团队",
+      "autoTools": "自动发现工具",
+      "markets": "3 大市场：A股 · 加密货币 · 港美股",
+      "connectors": "交易连接器配置",
+      "timeframes": "分钟级到日线级时间框架",
+      "optimizers": "4 种投资组合优化器",
+      "riskMetrics": "15+ 风险指标",
+      "options": "期权与衍生品",
+      "pdfWeb": "PDF 与网络研究",
+      "factorML": "因子分析与机器学习",
+      "journalAnalyzer": "交易日志分析器",
+      "shadowBacktest": "影子账户回测",
+      "memory": "持久化记忆",
+      "sessionSearch": "会话搜索"
     }
   },
   "settings": {
@@ -484,7 +506,20 @@
     "oauth": "OAuth",
     "authentication": "身份验证",
     "apiKey": "API 密钥",
-    "tushareTokenDesc": "用于中国 A 股、期货、基金和宏观数据。没填的话会自动改用 AKShare 的免费数据。"
+    "tushareTokenDesc": "用于中国 A 股、期货、基金和宏观数据。没填的话会自动改用 AKShare 的免费数据。",
+    "exactModelIdHint": "请使用你的提供商要求的准确模型 ID。",
+    "changingProvidersHint": "切换提供商会自动更新推荐模型和端点。",
+    "leaveBlankToKeep": "留空保留当前密钥",
+    "oauthProviderDesc": "此提供商使用 OAuth。运行: {{command}}",
+    "clearSavedApiKey": "清除已保存的 API 密钥",
+    "clearSavedTushareToken": "清除已保存的 Tushare Token",
+    "reasoningEffortHint": "模型回答前的思考深度。深度越高越全面但速度越慢；选择「关闭」可获得最快响应。",
+    "dataSourcesPageDesc": "配置回测和研究智能体使用的可选市场数据凭据。",
+    "tushareTokenHint": "用于中国 A 股、期货、基金及宏观数据。如未设置，项目将在可用时回退至 AKShare。",
+    "settingsUnavailable": "设置不可用",
+    "dataSourceSettingsTitle": "数据源设置",
+    "saveDataSources": "保存数据源设置",
+    "failedToLoadSettings": "加载设置失败"
   },
   "qveris": {
     "title": "QVeris 工具市场",
@@ -602,7 +637,13 @@
     "resumeConnector": "恢复连接器",
     "resumeConnectorTitle": "清除熔断开关并恢复连接器活动",
     "connectorResumed": "连接器已恢复",
-    "failedToResumeConnector": "恢复连接器失败。"
+    "failedToResumeConnector": "恢复连接器失败。",
+    "researchGoalMenu": "研究目标",
+    "checkTradingConnectorMenu": "检查交易连接器",
+    "analyzeConnectorPortfolioMenu": "分析连接器投资组合",
+    "uploadPdf": "上传 PDF 文档",
+    "haltConnectorRuntime": "停止连接器运行时",
+    "haltConnectorRuntimeTooltip": "立即停止连接器运行时并等待确认"
   },
   "runDetail": {
     "title": "运行详情",
@@ -1074,7 +1115,10 @@
     "benchStreamError": "基准测试数据流错误",
     "job": "任务 {{id}}…",
     "compareStreamError": "对比数据流错误",
-    "failedToStartComparison": "启动对比失败"
+    "failedToStartComparison": "启动对比失败",
+    "deltaSort": "差值 {{sort}}",
+    "alphaPlaceholder": "alpha101_1, alpha101_2, gtja191_5",
+    "decayDaysTitle": "预测半衰期（天）。表示 Alpha 的信号值衰减到 0.5 所需的时间窗口长度。该值根据 IC 半衰期估算，越大则信号越持久。"
   },
   "validation": {
     "noData": "暂无验证数据。",
@@ -1110,7 +1154,10 @@
     "actualLabel": "实际",
     "medianLabel": "中位数",
     "windowReturns": "逐窗口收益",
-    "tradeNumber": "交易序号"
+    "tradeNumber": "交易序号",
+    "sharpe": "夏普比率",
+    "tradesCol": "交易次数",
+    "noValidation": "暂无验证数据。"
   },
   "thinking": {
     "processing": "处理中",
@@ -1161,7 +1208,9 @@
     "runnerControlFailed": "执行程序控制失败。",
     "startRunnerTitle": "启动常驻执行程序",
     "stopRunnerTitle": "停止常驻执行程序",
-    "expiresAt": "{{time}} 到期"
+    "expiresAt": "{{time}} 到期",
+    "noConnectorConnected": "无连接器已连接",
+    "daysHours": "{{d}}天{{h}}小时"
   },
   "swarmStatus": {
     "agents": "{{done}}/{{total}} 个智能体",
@@ -1257,7 +1306,14 @@
   "charts": {
     "noPriceData": "这个标的还没有价格数据",
     "noCorrelationData": "至少选两个标的才能比较",
-    "noEquityData": "还没有净值曲线——先跑一次回测"
+    "noEquityData": "还没有净值曲线——先跑一次回测",
+    "indicators": "技术指标 ({{count}})",
+    "ma": "移动平均线",
+    "channel": "通道",
+    "bareK": "裸K线（清除全部）",
+    "saveImage": "保存图片",
+    "zoom": "缩放",
+    "reset": "重置"
   },
   "toolProgress": {
     "step": "步骤 {{step}} · {{tool}}",
@@ -1399,7 +1455,10 @@
     "update_hypothesis": "更新研究假设",
     "update_research_goal_status": "更新目标状态",
     "web_search": "搜索网页",
-    "write_file": "生成代码"
+    "write_file": "生成代码",
+    "toolsRunning": "{{count}} 个工具正在运行",
+    "toolsRunningTitle": "{{count}} 个工具正在运行",
+    "moreOverflow": "…还有 {{count}} 个"
   },
   "runDashboard": {
     "eyebrow": "量化研究 · 策略回测",
@@ -1621,6 +1680,32 @@
       "unknownTestError": "连接器返回了未知错误。",
       "delete": "删除",
       "configured": "所需凭证已配置"
+    }
+  },
+  "skills": {
+    "title": "已安装 Skill",
+    "subtitle": "浏览已安装的技能模块，每个技能提供特定的方法论或数据访问能力",
+    "countLabel": "共 {{count}} 个技能",
+    "searchPlaceholder": "搜索技能名称或描述…",
+    "noResults": "未找到匹配的技能",
+    "noSkills": "暂无已安装的技能",
+    "loadError": "加载技能列表失败",
+    "detail": {
+      "back": "返回技能列表",
+      "category": "分类",
+      "metadata": "元数据",
+      "source": "技能内容"
+    },
+    "categories": {
+      "strategy": "策略",
+      "analysis": "分析",
+      "data-source": "数据源",
+      "asset-class": "资产类别",
+      "crypto": "加密货币",
+      "flow": "资金流",
+      "tool": "工具",
+      "risk-analysis": "风控",
+      "other": "其他"
     }
   }
 }

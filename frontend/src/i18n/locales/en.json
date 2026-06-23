@@ -5,7 +5,14 @@
   "charts": {
     "noPriceData": "No price data for this symbol yet",
     "noCorrelationData": "Pick at least two symbols to compare",
-    "noEquityData": "No account-value curve yet — run a backtest first"
+    "noEquityData": "No account-value curve yet — run a backtest first",
+    "indicators": "Indicators ({{count}})",
+    "ma": "MA",
+    "channel": "Channel",
+    "bareK": "Bare K (clear all)",
+    "saveImage": "Save",
+    "zoom": "Zoom",
+    "reset": "Reset"
   },
   "layout": {
     "home": "Home",
@@ -33,7 +40,8 @@
     "skipToMain": "Skip to main content",
     "sidebar": "Vibe-Trading sidebar",
     "mainNavigation": "Main navigation",
-    "about": "About"
+    "about": "About",
+    "skills": "Skills"
   },
   "runtime": {
     "monitorBadge": "Runtime Monitor",
@@ -330,6 +338,27 @@
       "night1": "Still thinking?",
       "night2": "Let's work through it.",
       "night3": "One more idea before you wrap up?"
+    },
+    "title": "Vibe-Trading",
+    "subtitle": "vibe trading with your professional financial agent team",
+    "describePrompt": "Describe a trading strategy to get started.",
+    "tryExample": "Try an example:",
+    "capabilities": {
+      "financeSkills": "Finance Skills Library",
+      "swarmTeams": "Swarm Agent Teams",
+      "autoTools": "Auto-Discovered Tools",
+      "markets": "3 Markets: A-Share · Crypto · HK/US",
+      "connectors": "Trading Connector Profiles",
+      "timeframes": "Minute to Daily Timeframes",
+      "optimizers": "4 Portfolio Optimizers",
+      "riskMetrics": "15+ Risk Metrics",
+      "options": "Options & Derivatives",
+      "pdfWeb": "PDF & Web Research",
+      "factorML": "Factor Analysis & ML",
+      "journalAnalyzer": "Trade Journal Analyzer",
+      "shadowBacktest": "Shadow Account Backtest",
+      "memory": "Persistent Memory",
+      "sessionSearch": "Session Search"
     }
   },
   "settings": {
@@ -489,7 +518,20 @@
     "oauth": "OAuth",
     "authentication": "Authentication",
     "apiKey": "API key",
-    "tushareTokenDesc": "Used for China A-share, futures, fund, and macro data. If unset, the project falls back to AKShare where available."
+    "tushareTokenDesc": "Used for China A-share, futures, fund, and macro data. If unset, the project falls back to AKShare where available.",
+    "exactModelIdHint": "Use the exact model id required by your provider.",
+    "changingProvidersHint": "Changing providers updates the recommended model and endpoint.",
+    "leaveBlankToKeep": "Leave blank to keep the current key",
+    "oauthProviderDesc": "This provider uses OAuth. Run: {{command}}",
+    "clearSavedApiKey": "Clear saved API key",
+    "clearSavedTushareToken": "Clear saved Tushare token",
+    "reasoningEffortHint": "How hard the model thinks before answering. Higher is more thorough but slower; leave Off for fastest replies.",
+    "dataSourcesPageDesc": "Configure optional market data credentials used by backtests and research agents.",
+    "tushareTokenHint": "Used for China A-share, futures, fund, and macro data. If unset, the project falls back to AKShare where available.",
+    "settingsUnavailable": "Settings are unavailable",
+    "dataSourceSettingsTitle": "Data Source Settings",
+    "saveDataSources": "Save data source settings",
+    "failedToLoadSettings": "Failed to load settings"
   },
   "qveris": {
     "title": "QVeris Tool Marketplace",
@@ -607,7 +649,13 @@
     "resumeConnector": "Resume connector",
     "resumeConnectorTitle": "Clear the kill switch and re-enable connector activity",
     "connectorResumed": "Connector resumed",
-    "failedToResumeConnector": "Failed to resume connector."
+    "failedToResumeConnector": "Failed to resume connector.",
+    "researchGoalMenu": "Research Goal",
+    "checkTradingConnectorMenu": "Check Trading Connector",
+    "analyzeConnectorPortfolioMenu": "Analyze Connector Portfolio",
+    "uploadPdf": "Upload PDF document",
+    "haltConnectorRuntime": "Halt connector runtime",
+    "haltConnectorRuntimeTooltip": "Halt the connector runtime immediately and wait for confirmation"
   },
   "runDetail": {
     "title": "Run Detail",
@@ -1079,7 +1127,10 @@
     "benchStreamError": "Bench stream error",
     "job": "Job {{id}}…",
     "compareStreamError": "Compare stream error",
-    "failedToStartComparison": "Failed to start comparison"
+    "failedToStartComparison": "Failed to start comparison",
+    "deltaSort": "Delta {{sort}}",
+    "alphaPlaceholder": "alpha101_1, alpha101_2, gtja191_5",
+    "decayDaysTitle": "Predictive half-life in days. The width of the rolling window over which the alpha's signal decays to 0.5. Estimated from the IC half-life; larger means more persistent."
   },
   "validation": {
     "noData": "No validation data available.",
@@ -1115,7 +1166,10 @@
     "actualLabel": "Actual",
     "medianLabel": "Median",
     "windowReturns": "Per-window return",
-    "tradeNumber": "Trade #"
+    "tradeNumber": "Trade #",
+    "sharpe": "Sharpe",
+    "tradesCol": "Trades",
+    "noValidation": "No validation data available."
   },
   "thinking": {
     "processing": "Processing",
@@ -1166,7 +1220,9 @@
     "runnerControlFailed": "Runner control failed.",
     "startRunnerTitle": "Start the persistent runner",
     "stopRunnerTitle": "Stop the persistent runner",
-    "expiresAt": "Expires {{time}}"
+    "expiresAt": "Expires {{time}}",
+    "noConnectorConnected": "no connector connected",
+    "daysHours": "{{d}}d{{h}}h"
   },
   "swarmStatus": {
     "agents": "{{done}}/{{total}} agents",
@@ -1399,7 +1455,10 @@
     "update_hypothesis": "Update research hypothesis",
     "update_research_goal_status": "Update goal status",
     "web_search": "Search the web",
-    "write_file": "Generate code"
+    "write_file": "Generate code",
+    "toolsRunning": "{{count}} tools running",
+    "toolsRunningTitle": "{{count}} tools running",
+    "moreOverflow": "...+{{count}} more"
   },
   "runDashboard": {
     "eyebrow": "Quantitative research · Backtest",
@@ -1621,6 +1680,32 @@
       "unknownTestError": "The connector returned an unknown error.",
       "delete": "Delete",
       "configured": "Required credentials configured"
+    }
+  },
+  "skills": {
+    "title": "Installed Skills",
+    "subtitle": "Browse installed skill modules — each provides specific methodologies or data access capabilities",
+    "countLabel": "{{count}} skills total",
+    "searchPlaceholder": "Search skill name or description…",
+    "noResults": "No matching skills found",
+    "noSkills": "No skills installed yet",
+    "loadError": "Failed to load skills",
+    "detail": {
+      "back": "Back to skill list",
+      "category": "Category",
+      "metadata": "Metadata",
+      "source": "Skill Content"
+    },
+    "categories": {
+      "strategy": "Strategy",
+      "analysis": "Analysis",
+      "data-source": "Data Source",
+      "asset-class": "Asset Class",
+      "crypto": "Crypto",
+      "flow": "Capital Flow",
+      "tool": "Tool",
+      "risk-analysis": "Risk Analysis",
+      "other": "Other"
     }
   }
 }

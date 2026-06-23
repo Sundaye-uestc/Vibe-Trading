@@ -261,6 +261,10 @@ register_portfolio_routes(app)
 from src.api.connection_routes import register_connection_routes  # noqa: E402
 register_connection_routes(app)
 
+# --- Installed skills (bundled + user) ---
+from src.api.skills_routes import register_skills_routes  # noqa: E402
+register_skills_routes(app)
+
 from src.api.live_routes import (  # noqa: F401, E402
     CommitMandateRequest,
     LiveHaltRequest,

@@ -34,6 +34,9 @@ const AlphaZoo = lazy(() =>
 const OptionsLab = lazy(() =>
   import("@/pages/OptionsLab").then((m) => ({ default: m.OptionsLab })),
 );
+const Skills = lazy(() =>
+  import("@/pages/Skills").then((m) => ({ default: m.Skills })),
+);
 
 function PageLoader() {
   return (
@@ -67,6 +70,8 @@ export const router = createBrowserRouter([
       { path: "/compare", element: wrap(Compare) },
       { path: "/correlation", element: wrap(Correlation) },
       { path: "/options", element: wrap(OptionsLab) },
+      { path: "/skills", element: wrap(Skills) },
+      { path: "/skills/:skillName", element: wrap(Skills) },
       { path: "/alpha-zoo", element: wrap(AlphaZoo) },
       { path: "/alpha-zoo/bench", element: wrap(AlphaZoo) },
       { path: "/alpha-zoo/compare", element: wrap(AlphaZoo) },

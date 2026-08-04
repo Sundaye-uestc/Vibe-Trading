@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Link, Outlet, useLocation, useSearchParams } from "react-router";
-import { Activity, BarChart3, Bot, CalendarClock, CandlestickChart, Check, ChevronDown, FileText, Languages, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2, WalletCards, Package } from "lucide-react";
+import { Activity, BarChart3, Bot, CalendarClock, CandlestickChart, Check, ChevronDown, FileText, Languages, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2, WalletCards, Package, Image } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { api, type SessionItem } from "@/lib/api";
@@ -10,9 +10,17 @@ import { useAgentStore } from "@/stores/agent";
 import { BrandMark } from "@/components/common/BrandMark";
 import { ConnectionBanner } from "@/components/layout/ConnectionBanner";
 import { SUPPORTED_LANGUAGES } from "@/i18n";
+import { AvatarSelector } from "@/components/chat/AvatarSelector";
+import { BackgroundSelector } from "@/components/layout/BackgroundSelector";
+import { getStoredBackground, saveBackground } from "@/hooks/useBackground";
+import { toast } from "sonner";
 
 // APP_VERSION is sourced from i18n locale files (app.version key) to keep a
 // single source of truth across the footer and every localised README.
+
+const MIN_SIDEBAR = 48;
+const MAX_SIDEBAR = 500;
+const COLLAPSE_THRESHOLD = 100;
 
 export function Layout() {
   const { t } = useTranslation();
@@ -38,23 +46,87 @@ export function Layout() {
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const sseStatus = useAgentStore(s => s.sseStatus);
   const sseRetryAttempt = useAgentStore(s => s.sseRetryAttempt);
-  const [collapsed, setCollapsed] = useState(() => safeGet("qa-sidebar") === "collapsed");
 
+  /* ---- Sidebar resize ---- */
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem("qa-sidebar-width");
+    if (saved) {
+      const n = parseInt(saved, 10);
+      if (!isNaN(n) && n >= MIN_SIDEBAR && n <= MAX_SIDEBAR) return n;
+    }
+    return 256;
+  });
+  const [expandedWidth, setExpandedWidth] = useState(() => {
+    const saved = localStorage.getItem("qa-sidebar-expanded-width");
+    if (saved) {
+      const n = parseInt(saved, 10);
+      if (!isNaN(n) && n >= COLLAPSE_THRESHOLD && n <= MAX_SIDEBAR) return n;
+    }
+    return 256;
+  });
+
+  const collapsed = sidebarWidth < COLLAPSE_THRESHOLD;
+  const isResizingRef = useRef(false);
+  const startXRef = useRef(0);
+  const startWidthRef = useRef(0);
+
+  const persistWidth = useCallback((w: number) => {
+    localStorage.setItem("qa-sidebar-width", String(w));
+    if (w >= COLLAPSE_THRESHOLD) {
+      localStorage.setItem("qa-sidebar-expanded-width", String(w));
+      setExpandedWidth(w);
+    }
+  }, []);
+
+  const toggleCollapse = useCallback(() => {
+    if (collapsed) {
+      setSidebarWidth(expandedWidth);
+      persistWidth(expandedWidth);
+    } else {
+      setSidebarWidth(48);
+      localStorage.setItem("qa-sidebar-width", "48");
+    }
+  }, [collapsed, expandedWidth, persistWidth]);
+
+  /* Mouse resize handlers */
+  const onResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingRef.current = true;
+    startXRef.current = e.clientX;
+    startWidthRef.current = sidebarWidth;
+    document.body.classList.add("sidebar-resizing");
+
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!isResizingRef.current) return;
+      const delta = ev.clientX - startXRef.current;
+      const next = Math.max(MIN_SIDEBAR, Math.min(MAX_SIDEBAR, startWidthRef.current + delta));
+      setSidebarWidth(next);
+    };
+
+    const onMouseUp = () => {
+      isResizingRef.current = false;
+      document.body.classList.remove("sidebar-resizing");
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      const el = document.querySelector<HTMLElement>("[data-sidebar]");
+      if (el) {
+        const finalW = el.offsetWidth;
+        persistWidth(finalW);
+      }
+    };
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, [sidebarWidth, persistWidth]);
+
+  /* Persist width on change */
+  useEffect(() => {
+    localStorage.setItem("qa-sidebar-width", String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  /* ---- Sessions ---- */
   const activeSessionId = searchParams.get("session");
   const streamingSessionId = useAgentStore(s => s.streamingSessionId);
-
-  useEffect(() => {
-    safeSet("qa-sidebar", collapsed ? "collapsed" : "expanded");
-  }, [collapsed]);
-
-  useEffect(() => {
-    const syncSidebarPreference = (event: StorageEvent) => {
-      if (event.key !== null && event.key !== "qa-sidebar") return;
-      setCollapsed(safeGet("qa-sidebar") === "collapsed");
-    };
-    window.addEventListener("storage", syncSidebarPreference);
-    return () => window.removeEventListener("storage", syncSidebarPreference);
-  }, []);
 
   const loadSessions = () => {
     api.listSessions()
@@ -63,8 +135,6 @@ export function Layout() {
       .finally(() => setSessionsLoading(false));
   };
 
-  // Load sessions on mount. Also refresh when navigating TO /agent or when
-  // the active session changes (covers new session creation from Agent).
   const isAgentPage = pathname.startsWith("/agent");
   useEffect(() => { loadSessions(); }, [isAgentPage, activeSessionId]);
 
@@ -97,8 +167,45 @@ export function Layout() {
     setRenameTarget(null);
   };
 
+  /* ---- Background ---- */
+  const [bg, setBg] = useState<string | null>(getStoredBackground);
+
+  const handleBgSave = (dataUrl: string | null) => {
+    // Update state first so the UI reacts immediately.
+    setBg(dataUrl);
+    // Persist in background; localStorage may fail if the data URL is huge.
+    try {
+      saveBackground(dataUrl);
+    } catch (e) {
+      console.error("Failed to persist background to localStorage", e);
+    }
+    if (dataUrl) {
+      toast.success(t("layout.backgroundApplied"));
+    } else {
+      toast.success(t("layout.backgroundRemoved"));
+    }
+  };
+
+  /* ---- Dialogs ---- */
+  const [avatarDialogOpen, setAvatarDialogOpen] = useState(false);
+  const [bgDialogOpen, setBgDialogOpen] = useState(false);
+
   return (
-    <div className="flex h-screen bg-background rtl:flex-row-reverse">
+    <div
+      className="flex h-screen relative bg-background rtl:flex-row-reverse"
+      style={
+        bg
+          ? {
+              backgroundImage: `url(${bg})`,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+              backgroundAttachment: "fixed",
+            }
+          : undefined
+      }
+    >
+      {/* Tint overlay — keeps content readable over custom background */}
+      {bg && <div className="absolute inset-0 bg-background/90 pointer-events-none" />}
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:fixed focus:start-4 focus:top-4 focus:z-[70] focus:rounded-md focus:bg-background focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-primary/40"
@@ -107,11 +214,13 @@ export function Layout() {
       </a>
       {/* Sidebar */}
       <aside
+        data-sidebar
         aria-label={t('layout.sidebar', { defaultValue: 'Vibe-Trading sidebar' })}
         className={cn(
-          "max-md:w-12 border-e border-border/60 bg-card flex flex-col shrink-0 transition-all duration-200 overflow-visible",
-          collapsed ? "w-12" : "w-64"
+          "max-md:w-12 border-e border-border/60 bg-card flex flex-col shrink-0 transition-[width] duration-200 overflow-visible relative",
+          collapsed ? "w-12" : ""
         )}
+        style={{ width: sidebarWidth }}
       >
         {/* Brand */}
         <div className={cn("border-b border-border/60", collapsed ? "p-2 flex justify-center" : "p-4 max-md:p-2 max-md:flex max-md:justify-center")}>
@@ -260,12 +369,69 @@ export function Layout() {
 
         {/* Footer */}
         <div className={cn("mt-auto border-t border-border/60", collapsed ? "p-1 flex flex-col items-center gap-1" : "p-3 space-y-2 max-md:p-1 max-md:flex max-md:flex-col max-md:items-center max-md:gap-1 max-md:space-y-0")}>
+          {/* Avatar + Background row */}
+          {collapsed ? (
+            <>
+              <button
+                onClick={() => setAvatarDialogOpen(true)}
+                className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors"
+                title={t('layout.changeAvatar')}
+              >
+                <span className="text-[10px] font-bold">P</span>
+              </button>
+              <button
+                onClick={() => setBgDialogOpen(true)}
+                className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors"
+                title={t('layout.changeBackground')}
+              >
+                <Image className="h-3.5 w-3.5 shrink-0" />
+              </button>
+              {bg && (
+                <button
+                  onClick={() => handleBgSave(null)}
+                  className="p-1.5 text-destructive/70 hover:text-destructive rounded transition-colors"
+                  title={t('layout.removeBackground')}
+                >
+                  <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                </button>
+              )}
+            </>
+          ) : (
+            <div className="flex items-center w-full">
+              <button
+                onClick={() => setAvatarDialogOpen(true)}
+                className="flex-1 flex items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground rounded py-1 transition-colors"
+              >
+                {t('layout.changeAvatar')}
+              </button>
+              <span className="w-px h-5 bg-border shrink-0" />
+              <button
+                onClick={() => setBgDialogOpen(true)}
+                className="flex-1 flex items-center justify-center text-xs text-muted-foreground hover:text-foreground rounded py-1 transition-colors"
+              >
+                {t('layout.changeBackground')}
+              </button>
+              {bg && (
+                <>
+                  <span className="w-px h-5 bg-border shrink-0" />
+                  <button
+                    onClick={() => handleBgSave(null)}
+                    className="flex items-center justify-center gap-1 text-xs text-destructive/80 hover:text-destructive rounded py-1 px-1.5 transition-colors"
+                    title={t('layout.removeBackground')}
+                  >
+                    <Trash2 className="h-3 w-3 shrink-0" />
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
           {collapsed ? (
             <>
               <button onClick={toggle} className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors" title={dark ? t('layout.light') : t('layout.dark')}>
                 {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
               </button>
-              <button onClick={() => setCollapsed(false)} className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors" title={t('layout.expand')}>
+              <button onClick={toggleCollapse} className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors" title={t('layout.expand')}>
                 <ChevronsRight className="h-3.5 w-3.5" />
               </button>
             </>
@@ -281,7 +447,7 @@ export function Layout() {
                 </button>
                 <div className="flex items-center gap-1 max-md:hidden">
                   <button
-                    onClick={() => setCollapsed(true)}
+                    onClick={toggleCollapse}
                     className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors"
                     title={t('layout.collapse')}
                   >
@@ -304,6 +470,13 @@ export function Layout() {
             </>
           )}
         </div>
+
+        {/* Resize handle */}
+        <div
+          className="sidebar-resize-handle absolute top-0 right-0 w-1 h-full z-10 transition-colors"
+          style={{ right: -2 }}
+          onMouseDown={onResizeMouseDown}
+        />
       </aside>
 
       {/* Main */}
@@ -313,6 +486,10 @@ export function Layout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Dialogs */}
+      <AvatarSelector open={avatarDialogOpen} onClose={() => setAvatarDialogOpen(false)} />
+      <BackgroundSelector open={bgDialogOpen} onClose={() => setBgDialogOpen(false)} onSave={handleBgSave} />
     </div>
   );
 }

@@ -92,6 +92,21 @@
   ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground)); }
 }
 
+/* Sidebar resize handle */
+.sidebar-resize-handle {
+  cursor: col-resize;
+}
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle:active {
+  background: hsl(var(--primary) / 0.3);
+}
+
+/* Prevent text selection during sidebar resize */
+body.sidebar-resizing {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 /* Streaming pulse-slide animation for the "running" bar */
 @keyframes pulse-slide {
   0%   { transform: translateX(-100%); }

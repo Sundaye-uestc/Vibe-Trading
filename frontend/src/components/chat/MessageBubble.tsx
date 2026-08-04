@@ -1,6 +1,6 @@
 import i18n from '@/i18n';
-import { Component, memo, useState, useCallback, type ReactNode } from "react";
-import { XCircle, RefreshCw, Copy, Check, Paperclip, Users, Target, Clock3 } from "lucide-react";
+import { Component, memo, useState, useEffect, useCallback, type ReactNode } from "react";
+import { User, XCircle, RefreshCw, Copy, Check, Paperclip, Users, Target, Clock3 } from "lucide-react";
 import ReactMarkdown, { type Options as ReactMarkdownOptions } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -11,7 +11,7 @@ import { toast } from "sonner";
 import { normalizeMathDelimiters } from "@/lib/markdown";
 import type { AgentMessage } from "@/types/agent";
 import type { StoredAgentMessage } from "@/stores/agent";
-import { AgentAvatar } from "./AgentAvatar";
+import { AgentAvatar, getUserAvatarConfig, type AvatarConfig } from "./AgentAvatar";
 import { RunCompleteCard } from "./RunCompleteCard";
 
 // singleDollarTextMath off: dollar amounts ("$150 to $120") must never parse as
@@ -160,6 +160,53 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+function UserAvatar() {
+  const [config, setConfig] = useState<AvatarConfig>(getUserAvatarConfig);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.tab === "user") {
+        setConfig(getUserAvatarConfig());
+      }
+    };
+    window.addEventListener("avatar-changed", handler);
+    return () => window.removeEventListener("avatar-changed", handler);
+  }, []);
+
+  // Check if user has explicitly set a custom avatar
+  const hasCustom = !!localStorage.getItem("qa-user-avatar");
+  if (!hasCustom) {
+    return (
+      <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center shrink-0 mt-0.5">
+        <User className="h-4 w-4 text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (config.type === "image" && config.imageDataUrl) {
+    const pos = config.imagePosition || { x: 50, y: 50 };
+    return (
+      <div
+        className="h-8 w-8 rounded-full shrink-0 mt-0.5 select-none overflow-hidden"
+        style={{
+          backgroundImage: `url(${config.imageDataUrl})`,
+          backgroundSize: "cover",
+          backgroundPosition: `${pos.x}% ${pos.y}%`,
+        }}
+      />
+    );
+  }
+
+  return (
+    <div
+      className={`h-8 w-8 rounded-full bg-gradient-to-br ${config.gradient} flex items-center justify-center text-white text-xs font-bold shrink-0 mt-0.5 select-none`}
+    >
+      {config.letter}
+    </div>
+  );
+}
+
 function getRetryHint(content: string): string {
   const lower = content.toLowerCase();
   if (lower.includes("timeout") || lower.includes("timed out")) {
@@ -220,7 +267,9 @@ export const MessageBubble = memo(function MessageBubble({ msg, onRetry }: Props
             </div>
           )}
           {msg.content}
+          {ts && <span className="block text-[9px] opacity-50 text-right mt-1">{ts}</span>}
         </div>
+        <UserAvatar />
       </div>
     );
   }

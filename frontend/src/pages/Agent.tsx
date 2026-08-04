@@ -1729,11 +1729,10 @@ export function Agent() {
       >
         <div
           className={[
-            "max-w-3xl mx-auto space-y-8",
+            "max-w-4xl mx-auto space-y-8",
             !sessionLoading && messages.length === 0 ? "min-h-full flex flex-col" : "",
           ].join(" ")}
-        >
-          {sessionLoading && (
+        >          {sessionLoading && (
             <div className="space-y-4 py-4">
               {[1, 2, 3].map(i => (
                 <div key={i} className="flex gap-3 animate-pulse">
@@ -1871,7 +1870,7 @@ export function Agent() {
         data-agent-composer
         className="border-t p-4 bg-background/80 backdrop-blur-sm"
       >
-        <div className="max-w-3xl mx-auto">
+        <div className="max-w-4xl mx-auto">
           <LiveRuntimePanel
             ref={liveRuntimeRef}
             sessionId={sessionId}
@@ -1897,8 +1896,7 @@ export function Agent() {
                     onSnapshotChange={handleGoalSnapshotChange}
                     onContinue={handleContinueGoal}
                   />
-                ) : undefined
-              }
+                ) : undefined              }
               onSubmit={runPrompt}
               onCancel={handleCancel}
               onExport={handleExport}

@@ -213,6 +213,15 @@
     "api_key_required": true
   },
   {
+    "name": "volcengine",
+    "label": "Volcengine Ark (火山方舟)",
+    "api_key_env": "VOLC_API_KEY",
+    "base_url_env": "VOLC_BASE_URL",
+    "default_model": "doubao-seed-1-6",
+    "default_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "api_key_required": true
+  },
+  {
     "name": "ollama",
     "label": "Ollama",
     "api_key_env": null,

@@ -231,6 +231,14 @@ _PROVIDERS: dict[str, ProviderCapabilities] = {
         "MODELSCOPE_API_KEY",
         "MODELSCOPE_BASE_URL",
     ),
+    "volcengine": ProviderCapabilities(
+        "volcengine",
+        "VOLC_API_KEY",
+        "VOLC_BASE_URL",
+        # Doubao reasoning models emit reasoning_content (same field as
+        # DeepSeek/Moonshot); capture it so the thinking trace is surfaced.
+        capture_reasoning=True,
+    ),
     "ollama": ProviderCapabilities("ollama", None, "OLLAMA_BASE_URL"),
     "copilot": _COPILOT_CAPABILITIES,
     "github-copilot": _COPILOT_CAPABILITIES,

@@ -58,6 +58,13 @@ export default defineConfig(({ mode }) => {
         // (/options/payoff, /options/chain) — same dual role as /correlation.
         // Overrides the plain PROXY_PATHS entry above.
         "/options": apiProxyWithHtmlFallback,
+        // /skills is both the SPA Skills page and the API prefix the page
+        // reads. Without the html fallback a browser refresh or a pasted
+        // deep link answered with raw JSON instead of the page; without the
+        // proxy at all, the page's own fetch got index.html back and threw
+        // "Unexpected token '<'". The split is on Accept: navigations send
+        // text/html, `request()` sends none.
+        "/skills": apiProxyWithHtmlFallback,
         "^/alpha(?:/|$)": apiProxy,
       },
     },

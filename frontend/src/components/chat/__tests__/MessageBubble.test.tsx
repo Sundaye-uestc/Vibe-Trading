@@ -35,7 +35,7 @@ describe("MessageBubble", () => {
   });
 
   describe("user messages", () => {
-    it("renders user content in the bounded neutral bubble without an avatar or timestamp", () => {
+    it("renders user content in the bounded neutral bubble with an avatar and timestamp", () => {
       const { container } = render(
         <MessageBubble msg={makeMsg({ type: "user", content: "Hello agent!" })} />,
       );
@@ -52,8 +52,9 @@ describe("MessageBubble", () => {
         "text-foreground",
       );
       expect(bubble).not.toHaveClass("rounded-tr-sm");
-      expect(screen.queryByText("14:30")).not.toBeInTheDocument();
-      expect(container.querySelector("svg")).toBeNull();
+      // The user bubble carries a timestamp and a configurable avatar.
+      expect(screen.getByText("14:30")).toBeInTheDocument();
+      expect(container.querySelector("svg")).not.toBeNull();
     });
 
     it("renders safe request metadata without exposing an attachment path", () => {

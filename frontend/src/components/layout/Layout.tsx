@@ -5,6 +5,7 @@ import { Activity, BarChart3, Bot, CalendarClock, CandlestickChart, Check, Chevr
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { api, type SessionItem } from "@/lib/api";
+import { safeGet, safeSet } from "@/lib/storage";
 import { useAgentStore } from "@/stores/agent";
 import { BrandMark } from "@/components/common/BrandMark";
 import { ConnectionBanner } from "@/components/layout/ConnectionBanner";
@@ -48,7 +49,7 @@ export function Layout() {
 
   /* ---- Sidebar resize ---- */
   const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const saved = localStorage.getItem("qa-sidebar-width");
+    const saved = safeGet("qa-sidebar-width");
     if (saved) {
       const n = parseInt(saved, 10);
       if (!isNaN(n) && n >= MIN_SIDEBAR && n <= MAX_SIDEBAR) return n;
@@ -56,7 +57,7 @@ export function Layout() {
     return 256;
   });
   const [expandedWidth, setExpandedWidth] = useState(() => {
-    const saved = localStorage.getItem("qa-sidebar-expanded-width");
+    const saved = safeGet("qa-sidebar-expanded-width");
     if (saved) {
       const n = parseInt(saved, 10);
       if (!isNaN(n) && n >= COLLAPSE_THRESHOLD && n <= MAX_SIDEBAR) return n;
@@ -70,9 +71,9 @@ export function Layout() {
   const startWidthRef = useRef(0);
 
   const persistWidth = useCallback((w: number) => {
-    localStorage.setItem("qa-sidebar-width", String(w));
+    safeSet("qa-sidebar-width", String(w));
     if (w >= COLLAPSE_THRESHOLD) {
-      localStorage.setItem("qa-sidebar-expanded-width", String(w));
+      safeSet("qa-sidebar-expanded-width", String(w));
       setExpandedWidth(w);
     }
   }, []);
@@ -83,7 +84,7 @@ export function Layout() {
       persistWidth(expandedWidth);
     } else {
       setSidebarWidth(48);
-      localStorage.setItem("qa-sidebar-width", "48");
+      safeSet("qa-sidebar-width", "48");
     }
   }, [collapsed, expandedWidth, persistWidth]);
 
@@ -120,8 +121,21 @@ export function Layout() {
 
   /* Persist width on change */
   useEffect(() => {
-    localStorage.setItem("qa-sidebar-width", String(sidebarWidth));
+    safeSet("qa-sidebar-width", String(sidebarWidth));
   }, [sidebarWidth]);
+
+  /* Adopt a width changed in another tab, mirroring the storage event. */
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== "qa-sidebar-width") return;
+      const next = parseInt(safeGet("qa-sidebar-width") ?? "", 10);
+      if (!isNaN(next) && next >= MIN_SIDEBAR && next <= MAX_SIDEBAR) {
+        setSidebarWidth(next);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   /* ---- Sessions ---- */
   const activeSessionId = searchParams.get("session");

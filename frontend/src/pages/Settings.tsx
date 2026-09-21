@@ -387,6 +387,8 @@ export function Settings() {
   const tushareStatus = dataSettings.tushare_token_configured
     ? t("settings.configured")
     : t("settings.keepCurrentToken");
+  // Optional: a fixture or an older backend may omit the field entirely.
+  const skillDataSources = dataSettings.skill_data_sources ?? [];
   const channelRows = channelStatus
     ? Object.entries(channelStatus.channels ?? {}).sort(([a], [b]) => a.localeCompare(b))
     : [];
@@ -805,7 +807,7 @@ export function Settings() {
         </div>
 
         {/* Skill Data Sources */}
-        {dataSettings && dataSettings.skill_data_sources.length > 0 && (
+        {skillDataSources.length > 0 && (
           <div className="mt-6 space-y-4">
             <div className="flex items-center gap-2">
               <Package className="h-4 w-4 text-primary" />
@@ -813,7 +815,7 @@ export function Settings() {
             </div>
             <p className="text-xs text-muted-foreground">{t("settings.skillDataSourcesDesc")}</p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {dataSettings.skill_data_sources.map((skill) => (
+              {skillDataSources.map((skill) => (
                 <Link
                   key={skill.name}
                   to={`/skills/${encodeURIComponent(skill.name)}`}

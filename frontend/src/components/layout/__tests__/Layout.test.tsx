@@ -140,15 +140,23 @@ describe("Layout accessibility", () => {
     expect(languageButton).not.toHaveAttribute("aria-haspopup");
   });
 
-  it("synchronizes the sidebar preference from another tab", () => {
-    window.localStorage.setItem("qa-sidebar", "expanded");
+  it("synchronizes the sidebar width from another tab", () => {
+    window.localStorage.setItem("qa-sidebar-width", "320");
     renderLayout();
     const sidebar = screen.getByRole("complementary", { name: "Vibe-Trading sidebar" });
-    expect(sidebar).toHaveClass("w-64");
+    expect(sidebar).toHaveStyle({ width: "320px" });
 
-    window.localStorage.setItem("qa-sidebar", "collapsed");
-    fireEvent(window, new StorageEvent("storage", { key: "qa-sidebar" }));
+    window.localStorage.setItem("qa-sidebar-width", "200");
+    fireEvent(window, new StorageEvent("storage", { key: "qa-sidebar-width" }));
 
-    expect(sidebar).toHaveClass("w-12");
+    expect(sidebar).toHaveStyle({ width: "200px" });
+  });
+
+  it("ignores a stored width outside the draggable range", () => {
+    window.localStorage.setItem("qa-sidebar-width", "9999");
+    renderLayout();
+
+    expect(screen.getByRole("complementary", { name: "Vibe-Trading sidebar" }))
+      .toHaveStyle({ width: "256px" });
   });
 });

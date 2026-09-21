@@ -380,10 +380,13 @@ def register_system_routes(
 
     @app.get("/skills", dependencies=[Depends(require_auth)])
     async def list_skills():
-        """List registered skills (name and description).
+        """List registered skills (name, description, category).
 
         Authenticated: the skill inventory describes the agent's installed
         capabilities and is not appropriate pre-auth reconnaissance material.
+        The Web UI groups this list by ``category``, so keep the field here --
+        a second ``GET /skills`` handler would lose to this registration and
+        silently strip whatever it added.
         """
         from src.agent.skills import SkillsLoader
 
@@ -392,6 +395,7 @@ def register_system_routes(
             {
                 "name": s.name,
                 "description": s.description,
+                "category": s.category,
             }
             for s in loader.skills
         ]

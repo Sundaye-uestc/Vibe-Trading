@@ -5,7 +5,14 @@
   "charts": {
     "noPriceData": "Aún no hay datos de precio para este símbolo",
     "noCorrelationData": "Elige al menos dos símbolos para comparar",
-    "noEquityData": "Aún no hay curva de valor de cuenta — ejecuta primero un backtest"
+    "noEquityData": "Aún no hay curva de valor de cuenta — ejecuta primero un backtest",
+    "indicators": "Indicators ({{count}})",
+    "ma": "MA",
+    "channel": "Channel",
+    "bareK": "Bare K (clear all)",
+    "saveImage": "Save",
+    "zoom": "Zoom",
+    "reset": "Reset"
   },
   "layout": {
     "home": "Inicio",
@@ -33,7 +40,30 @@
     "skipToMain": "Saltar al contenido principal",
     "sidebar": "Barra lateral de Vibe-Trading",
     "mainNavigation": "Navegación principal",
-    "about": "Acerca de"
+    "about": "Acerca de",
+    "skills": "Skills",
+    "changeAvatar": "Change Avatar",
+    "agentAvatar": "Agent Avatar",
+    "userAvatar": "User Avatar",
+    "avatarLetter": "Letter",
+    "avatarPresets": "Presets",
+    "saveAvatar": "Save",
+    "avatarLetterMode": "Letter",
+    "avatarImageMode": "Image",
+    "chooseImage": "Choose Image",
+    "changeImage": "Change Image",
+    "imageSizeHint": "JPG/PNG, max 5MB",
+    "imageTooLarge": "Image must be under 5MB",
+    "invalidImageType": "Please select a valid image file",
+    "imageLoadFailed": "Failed to load image, please retry",
+    "changeBackground": "Change Background",
+    "applyBackground": "Apply Background",
+    "removeBackground": "Remove Background",
+    "backgroundSizeHint": "Upload an image as app background (max 5MB)",
+    "backgroundApplied": "Background applied",
+    "backgroundRemoved": "Background removed",
+    "dragToCrop": "Drag to adjust crop area",
+    "avatarPreview": "Preview"
   },
   "runtime": {
     "monitorBadge": "Monitor de Runtime",
@@ -330,6 +360,27 @@
       "night1": "¿Sigues pensando?",
       "night2": "Vamos a resolverlo.",
       "night3": "¿Una idea más antes de terminar?"
+    },
+    "title": "Vibe-Trading",
+    "subtitle": "vibe trading with your professional financial agent team",
+    "describePrompt": "Describe a trading strategy to get started.",
+    "tryExample": "Try an example:",
+    "capabilities": {
+      "financeSkills": "Finance Skills Library",
+      "swarmTeams": "Swarm Agent Teams",
+      "autoTools": "Auto-Discovered Tools",
+      "markets": "3 Markets: A-Share · Crypto · HK/US",
+      "connectors": "Trading Connector Profiles",
+      "timeframes": "Minute to Daily Timeframes",
+      "optimizers": "4 Portfolio Optimizers",
+      "riskMetrics": "15+ Risk Metrics",
+      "options": "Options & Derivatives",
+      "pdfWeb": "PDF & Web Research",
+      "factorML": "Factor Analysis & ML",
+      "journalAnalyzer": "Trade Journal Analyzer",
+      "shadowBacktest": "Shadow Account Backtest",
+      "memory": "Persistent Memory",
+      "sessionSearch": "Session Search"
     }
   },
   "settings": {
@@ -377,6 +428,9 @@
     "noProjectLoader": "Sin cargador de proyecto",
     "pythonPackageInstalled": "Paquete de Python instalado",
     "pythonPackageNotInstalled": "Paquete de Python no instalado",
+    "skillDataSourcesTitle": "Skill Data Sources",
+    "skillDataSourcesDesc": "These data sources are provided by installed skills and require no API key configuration.",
+    "skillDataSourceVersion": "Version",
     "localApiAccess": "Acceso local a la API",
     "localApiAccessDesc": "Para despliegues remotos o privados de la interfaz web, ingresa la clave de API del servidor una vez en este navegador. El uso en localhost puede dejarse en blanco.",
     "serverApiKey": "Clave de API del servidor",
@@ -489,7 +543,44 @@
     "oauth": "OAuth",
     "authentication": "Autenticación",
     "apiKey": "Clave de API",
-    "tushareTokenDesc": "Usado para datos de acciones A, futuros, fondos y macro de China. Si no se configura, el proyecto recurre a AKShare cuando está disponible."
+    "tushareTokenDesc": "Usado para datos de acciones A, futuros, fondos y macro de China. Si no se configura, el proyecto recurre a AKShare cuando está disponible.",
+    "exactModelIdHint": "Use the exact model id required by your provider.",
+    "changingProvidersHint": "Changing providers updates the recommended model and endpoint.",
+    "leaveBlankToKeep": "Leave blank to keep the current key",
+    "oauthProviderDesc": "This provider uses OAuth. Run: {{command}}",
+    "clearSavedApiKey": "Clear saved API key",
+    "clearSavedTushareToken": "Clear saved Tushare token",
+    "reasoningEffortHint": "How hard the model thinks before answering. Higher is more thorough but slower; leave Off for fastest replies.",
+    "dataSourcesPageDesc": "Configure optional market data credentials used by backtests and research agents.",
+    "tushareTokenHint": "Used for China A-share, futures, fund, and macro data. If unset, the project falls back to AKShare where available.",
+    "settingsUnavailable": "Settings are unavailable",
+    "dataSourceSettingsTitle": "Data Source Settings",
+    "saveDataSources": "Save data source settings",
+    "failedToLoadSettings": "Failed to load settings",
+    "profilesTitle": "Saved Configurations",
+    "profilesDesc": "Save multiple LLM configurations and switch between models with one click, without editing config files by hand.",
+    "active": "Active",
+    "activate": "Switch",
+    "activating": "Switching",
+    "activated": "Switched to {{name}}",
+    "activateFailed": "Switch failed",
+    "addProfile": "New configuration",
+    "editProfile": "Edit configuration",
+    "newProfile": "New configuration",
+    "profileName": "Configuration name",
+    "profileNamePlaceholder": "e.g. DeepSeek Official",
+    "profileNameHint": "Leave blank to use the provider name.",
+    "noProfiles": "No saved configurations yet. Click \"New configuration\" to add one.",
+    "saveProfile": "Save configuration",
+    "profileSaved": "Configuration saved",
+    "deleteProfile": "Delete configuration",
+    "deleteProfileConfirm": "Delete configuration \"{{name}}\"?",
+    "profileDeleted": "Configuration deleted",
+    "apiKeySet": "Key configured",
+    "apiKeyMissing": "No key",
+    "profileStore": "Profile store",
+    "loadProfilesFailed": "Failed to load configurations",
+    "cancel": "Cancel"
   },
   "qveris": {
     "title": "Mercado de herramientas QVeris",
@@ -607,7 +698,13 @@
     "resumeConnector": "Reanudar conector",
     "resumeConnectorTitle": "Desactivar el interruptor de emergencia y reanudar la actividad del conector",
     "connectorResumed": "Conector reanudado",
-    "failedToResumeConnector": "Error al reanudar el conector."
+    "failedToResumeConnector": "Error al reanudar el conector.",
+    "researchGoalMenu": "Research Goal",
+    "checkTradingConnectorMenu": "Check Trading Connector",
+    "analyzeConnectorPortfolioMenu": "Analyze Connector Portfolio",
+    "uploadPdf": "Upload PDF document",
+    "haltConnectorRuntime": "Halt connector runtime",
+    "haltConnectorRuntimeTooltip": "Halt the connector runtime immediately and wait for confirmation"
   },
   "runDetail": {
     "title": "Detalle de ejecución",
@@ -1079,7 +1176,10 @@
     "benchStreamError": "Error en el flujo de benchmark",
     "job": "Tarea {{id}}…",
     "compareStreamError": "Error en el flujo de comparación",
-    "failedToStartComparison": "Error al iniciar la comparación"
+    "failedToStartComparison": "Error al iniciar la comparación",
+    "deltaSort": "Delta {{sort}}",
+    "alphaPlaceholder": "alpha101_1, alpha101_2, gtja191_5",
+    "decayDaysTitle": "Predictive half-life in days. The width of the rolling window over which the alpha's signal decays to 0.5. Estimated from the IC half-life; larger means more persistent."
   },
   "validation": {
     "noData": "No hay datos de validación disponibles.",
@@ -1115,7 +1215,10 @@
     "actualLabel": "Real",
     "medianLabel": "Mediana",
     "windowReturns": "Retorno por ventana",
-    "tradeNumber": "Operación n.°"
+    "tradeNumber": "Operación n.°",
+    "sharpe": "Sharpe",
+    "tradesCol": "Trades",
+    "noValidation": "No validation data available."
   },
   "thinking": {
     "processing": "Procesando",
@@ -1166,7 +1269,9 @@
     "runnerControlFailed": "Falló el control del ejecutor.",
     "startRunnerTitle": "Iniciar el ejecutor persistente",
     "stopRunnerTitle": "Detener el ejecutor persistente",
-    "expiresAt": "Vence {{time}}"
+    "expiresAt": "Vence {{time}}",
+    "noConnectorConnected": "no connector connected",
+    "daysHours": "{{d}}d{{h}}h"
   },
   "swarmStatus": {
     "agents": "{{done}}/{{total}} agentes",
@@ -1399,7 +1504,10 @@
     "update_hypothesis": "Actualizar hipótesis de investigación",
     "update_research_goal_status": "Actualizar estado del objetivo",
     "web_search": "Buscar en la web",
-    "write_file": "Generar código"
+    "write_file": "Generar código",
+    "toolsRunning": "{{count}} tools running",
+    "toolsRunningTitle": "{{count}} tools running",
+    "moreOverflow": "...+{{count}} more"
   },
   "runDashboard": {
     "eyebrow": "Investigación cuantitativa · Backtest",
@@ -1621,6 +1729,32 @@
       "unknownTestError": "El conector devolvió un error desconocido.",
       "delete": "Eliminar",
       "configured": "Credenciales necesarias configuradas"
+    }
+  },
+  "skills": {
+    "title": "Installed Skills",
+    "subtitle": "Browse installed skill modules — each provides specific methodologies or data access capabilities",
+    "countLabel": "{{count}} skills total",
+    "searchPlaceholder": "Search skill name or description…",
+    "noResults": "No matching skills found",
+    "noSkills": "No skills installed yet",
+    "loadError": "Failed to load skills",
+    "detail": {
+      "back": "Back to skill list",
+      "category": "Category",
+      "metadata": "Metadata",
+      "source": "Skill Content"
+    },
+    "categories": {
+      "strategy": "Strategy",
+      "analysis": "Analysis",
+      "data-source": "Data Source",
+      "asset-class": "Asset Class",
+      "crypto": "Crypto",
+      "flow": "Capital Flow",
+      "tool": "Tool",
+      "risk-analysis": "Risk Analysis",
+      "other": "Other"
     }
   }
 }

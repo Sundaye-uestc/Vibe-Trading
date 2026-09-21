@@ -786,3 +786,228 @@ def test_update_source_orders_rejects_unknown_market(
     assert response.status_code == 400
     assert "Unknown market" in response.json()["detail"]
     assert not (tmp_path / ".env").exists()
+
+
+def test_llm_profiles_seed_from_env_and_expose_active(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "LANGCHAIN_PROVIDER=deepseek",
+                "LANGCHAIN_MODEL_NAME=deepseek-v4-flash",
+                "DEEPSEEK_API_KEY=ds-secret-value",
+                "DEEPSEEK_BASE_URL=https://api.deepseek.com/v1",
+                "TIMEOUT_SECONDS=1500",
+                "LANGCHAIN_REASONING_EFFORT=high",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.get("/settings/llm/profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["profiles"]) == 1
+    profile = body["profiles"][0]
+    assert profile["provider"] == "deepseek"
+    assert profile["model_name"] == "deepseek-v4-flash"
+    assert profile["api_key_configured"] is True
+    assert profile["active"] is True
+    assert body["active_profile_id"] == profile["id"]
+    assert not Path(body["store_path"]).is_absolute()
+    assert "ds-secret-value" not in response.text
+
+    store = tmp_path / ".ui_runtime" / "llm_profiles.json"
+    assert store.exists()
+    assert store.read_text(encoding="utf-8").count("ds-secret-value") == 1
+
+
+def test_llm_profile_store_is_not_reseeded_after_emptying(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text(
+        "LANGCHAIN_PROVIDER=deepseek\nLANGCHAIN_MODEL_NAME=deepseek-v4-flash\n",
+        encoding="utf-8",
+    )
+    created = client.get("/settings/llm/profiles").json()["profiles"][0]
+
+    deleted = client.delete(f"/settings/llm/profiles/{created['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["profiles"] == []
+
+    again = client.get("/settings/llm/profiles").json()
+    assert again["profiles"] == []
+    assert again["active_profile_id"] is None
+
+
+def test_create_activate_and_update_llm_profile(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "LANGCHAIN_PROVIDER=deepseek",
+                "LANGCHAIN_MODEL_NAME=deepseek-v4-flash",
+                "DEEPSEEK_API_KEY=ds-secret-value",
+                "DEEPSEEK_BASE_URL=https://api.deepseek.com/v1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client.get("/settings/llm/profiles")
+
+    created = client.post(
+        "/settings/llm/profiles",
+        json={
+            "name": "Volc Ark",
+            "provider": "volcengine",
+            "model_name": "doubao-seed-1-6",
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+            "api_key": "ark-secret-value",
+            "temperature": 0.0,
+            "timeout_seconds": 300,
+            "max_retries": 2,
+            "reasoning_effort": "high",
+        },
+    )
+    assert created.status_code == 200
+    body = created.json()
+    assert len(body["profiles"]) == 2
+    assert "ark-secret-value" not in created.text
+    new_profile = next(p for p in body["profiles"] if p["name"] == "Volc Ark")
+    assert new_profile["provider_label"] == "Volcengine Ark (火山方舟)"
+    assert new_profile["api_key_configured"] is True
+    assert new_profile["active"] is False
+
+    activated = client.post(f"/settings/llm/profiles/{new_profile['id']}/activate")
+    assert activated.status_code == 200
+    assert activated.json()["active_profile_id"] == new_profile["id"]
+    assert next(p for p in activated.json()["profiles"] if p["id"] == new_profile["id"])["active"] is True
+
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "LANGCHAIN_PROVIDER=volcengine" in env_text
+    assert "LANGCHAIN_MODEL_NAME=doubao-seed-1-6" in env_text
+    assert "VOLC_API_KEY=ark-secret-value" in env_text
+
+    edited = client.put(
+        f"/settings/llm/profiles/{new_profile['id']}",
+        json={
+            "name": "Volc Ark Renamed",
+            "provider": "volcengine",
+            "model_name": "doubao-seed-1-6-pro",
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+            "temperature": 0.0,
+            "timeout_seconds": 300,
+            "max_retries": 2,
+            "reasoning_effort": "high",
+        },
+    )
+    assert edited.status_code == 200
+    renamed = next(p for p in edited.json()["profiles"] if p["id"] == new_profile["id"])
+    assert renamed["name"] == "Volc Ark Renamed"
+    assert renamed["model_name"] == "doubao-seed-1-6-pro"
+    # Blank api_key on edit keeps the previously stored secret.
+    assert renamed["api_key_configured"] is True
+    assert "doubao-seed-1-6-pro" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+
+def test_llm_profile_endpoints_reject_unknown_ids_and_providers(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text("LANGCHAIN_PROVIDER=deepseek\n", encoding="utf-8")
+    client.get("/settings/llm/profiles")
+
+    assert client.post("/settings/llm/profiles/missing/activate").status_code == 404
+    assert client.delete("/settings/llm/profiles/missing").status_code == 404
+    bad = client.post(
+        "/settings/llm/profiles",
+        json={
+            "provider": "not-a-provider",
+            "model_name": "whatever",
+            "temperature": 0.0,
+            "timeout_seconds": 120,
+            "max_retries": 2,
+        },
+    )
+    assert bad.status_code == 400
+
+
+def test_llm_profile_writes_reject_remote_dev_mode_clients(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_example = tmp_path / ".env.example"
+    env_path.write_text("LANGCHAIN_PROVIDER=deepseek\n", encoding="utf-8")
+    env_example.write_text("LANGCHAIN_PROVIDER=openai\n", encoding="utf-8")
+    monkeypatch.setattr(api_server, "ENV_PATH", env_path)
+    monkeypatch.setattr(api_server, "ENV_EXAMPLE_PATH", env_example)
+    monkeypatch.delenv("API_AUTH_KEY", raising=False)
+    remote_client = TestClient(api_server.app, client=("203.0.113.10", 50000))
+
+    response = remote_client.post(
+        "/settings/llm/profiles",
+        json={
+            "provider": "deepseek",
+            "model_name": "deepseek-v4-flash",
+            "temperature": 0.0,
+            "timeout_seconds": 120,
+            "max_retries": 2,
+        },
+    )
+
+    assert response.status_code == 403
+    assert not (tmp_path / ".ui_runtime" / "llm_profiles.json").exists()
+
+
+def test_env_writes_preserve_commented_provider_backups(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    """Commented-out lines are backups and must never be rewritten in place."""
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "LANGCHAIN_PROVIDER=deepseek",
+                "LANGCHAIN_MODEL_NAME=deepseek-v4-flash",
+                "DEEPSEEK_API_KEY=ds-secret-value",
+                "DEEPSEEK_BASE_URL=https://api.deepseek.com/v1",
+                "# LANGCHAIN_PROVIDER=volcengine",
+                "# LANGCHAIN_MODEL_NAME=deepseek-v4-flash-260425",
+                "# VOLC_API_KEY=ark-real-backup-key",
+                "# VOLC_BASE_URL=https://ark.cn-beijing.volces.com/api/plan/v3",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.put(
+        "/settings/llm",
+        json={
+            "provider": "deepseek",
+            "model_name": "deepseek-v4-flash",
+            "base_url": "https://api.deepseek.com/v1",
+            "temperature": 0.0,
+            "timeout_seconds": 1500,
+            "max_retries": 2,
+            "reasoning_effort": "high",
+        },
+    )
+
+    assert response.status_code == 200
+    env_text = env_path.read_text(encoding="utf-8")
+    # The backup block survives untouched.
+    assert "# LANGCHAIN_PROVIDER=volcengine" in env_text
+    assert "# VOLC_API_KEY=ark-real-backup-key" in env_text
+    assert "# VOLC_BASE_URL=https://ark.cn-beijing.volces.com/api/plan/v3" in env_text
+    # And no uncommented VOLC_* entry was injected.
+    active_volc = [
+        line
+        for line in env_text.splitlines()
+        if line.strip().startswith("VOLC_")
+    ]
+    assert active_volc == [], active_volc

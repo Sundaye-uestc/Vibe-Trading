@@ -488,6 +488,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify(settings),
     }),
+  listLLMProfiles: () => request<LLMProfilesResponse>("/settings/llm/profiles"),
+  createLLMProfile: (profile: LLMProfileUpsertRequest) =>
+    request<LLMProfilesResponse>("/settings/llm/profiles", {
+      method: "POST",
+      body: JSON.stringify(profile),
+    }),
+  updateLLMProfile: (id: string, profile: LLMProfileUpsertRequest) =>
+    request<LLMProfilesResponse>(`/settings/llm/profiles/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(profile),
+    }),
+  deleteLLMProfile: (id: string) =>
+    request<LLMProfilesResponse>(`/settings/llm/profiles/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  activateLLMProfile: (id: string) =>
+    request<LLMProfilesResponse>(`/settings/llm/profiles/${encodeURIComponent(id)}/activate`, {
+      method: "POST",
+    }),
   getDataSourceSettings: () => request<DataSourceSettings>("/settings/data-sources"),
   updateDataSourceSettings: (settings: UpdateDataSourceSettingsRequest) =>
     request<DataSourceSettings>("/settings/data-sources", {
@@ -774,6 +793,42 @@ export interface SourceOrderUpdate {
   market: string;
   /** New order (permutation of default_order). null/omitted = reset to default. */
   order?: string[] | null;
+}
+
+export interface LLMProfileInfo {
+  id: string;
+  name: string;
+  provider: string;
+  provider_label: string;
+  model_name: string;
+  base_url: string;
+  api_key_configured: boolean;
+  api_key_required: boolean;
+  temperature: number;
+  timeout_seconds: number;
+  max_retries: number;
+  reasoning_effort: string;
+  active: boolean;
+}
+
+export interface LLMProfilesResponse {
+  profiles: LLMProfileInfo[];
+  active_profile_id?: string | null;
+  store_path: string;
+  providers: LLMProviderOption[];
+}
+
+export interface LLMProfileUpsertRequest {
+  name?: string;
+  provider: string;
+  model_name: string;
+  base_url?: string;
+  api_key?: string;
+  clear_api_key?: boolean;
+  temperature: number;
+  timeout_seconds: number;
+  max_retries: number;
+  reasoning_effort?: string;
 }
 
 export interface DataSourceSettings {

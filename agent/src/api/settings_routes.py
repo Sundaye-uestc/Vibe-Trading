@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import sys as _sys
+import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional
 from urllib.parse import urlsplit
@@ -75,6 +76,46 @@ class UpdateLLMSettingsRequest(BaseModel):
     max_retries: int = Field(2, ge=0, le=20)
     reasoning_effort: Optional[str] = None
 
+class LLMProfileInfo(BaseModel):
+    """A saved LLM configuration profile shown in the switcher UI."""
+
+    id: str
+    name: str
+    provider: str
+    provider_label: str = ""
+    model_name: str
+    base_url: str
+    api_key_configured: bool = False
+    api_key_required: bool = True
+    temperature: float = 0.0
+    timeout_seconds: int = 120
+    max_retries: int = 2
+    reasoning_effort: str = ""
+    active: bool = False
+
+
+class LLMProfilesResponse(BaseModel):
+    """Saved LLM profiles plus the currently active one."""
+
+    profiles: List[LLMProfileInfo] = Field(default_factory=list)
+    active_profile_id: Optional[str] = None
+    store_path: str
+    providers: List[LLMProviderOption] = Field(default_factory=list)
+
+
+class LLMProfileUpsertRequest(BaseModel):
+    """Create or update a saved LLM profile."""
+
+    name: str = Field("", max_length=120)
+    provider: str = Field(..., min_length=1)
+    model_name: str = Field(..., min_length=1)
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    clear_api_key: bool = False
+    temperature: float = 0.0
+    timeout_seconds: int = Field(120, ge=1, le=3600)
+    max_retries: int = Field(2, ge=0, le=20)
+    reasoning_effort: Optional[str] = None
 
 class ListLLMModelsRequest(BaseModel):
     """Resolve live model choices without persisting credentials or settings."""
@@ -567,6 +608,299 @@ def _sync_runtime_env(provider: LLMProviderOption, updates: Dict[str, str]) -> N
     reset_env_config()
 
 
+# ---------------------------------------------------------------------------
+# Saved LLM profiles (CCSwitch-style one-click provider switching)
+# ---------------------------------------------------------------------------
+
+
+def _profile_store_path() -> Path:
+    """Path to the JSON store holding saved LLM configuration profiles.
+
+    Derived from the host ``ENV_PATH`` so that redirecting it (as the API tests
+    do) also relocates the profile store instead of writing to the real config.
+    """
+    return _host().ENV_PATH.parent / ".ui_runtime" / "llm_profiles.json"
+
+
+def _read_profile_store() -> Dict[str, Any]:
+    """Read the profile store, tolerating a missing or corrupt file."""
+    path = _profile_store_path()
+    empty: Dict[str, Any] = {"profiles": [], "active_profile_id": None, "seeded": False}
+    if not path.exists():
+        return empty
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return empty
+    if not isinstance(raw, dict):
+        return empty
+    profiles = raw.get("profiles")
+    if not isinstance(profiles, list):
+        profiles = []
+    active = raw.get("active_profile_id")
+    return {
+        "profiles": [item for item in profiles if isinstance(item, dict)],
+        "active_profile_id": active if isinstance(active, str) and active else None,
+        "seeded": bool(raw.get("seeded")),
+    }
+
+
+def _write_profile_store(store: Dict[str, Any]) -> None:
+    """Persist the profile store as pretty-printed JSON."""
+    path = _profile_store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(store, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _profile_display_name(profile: Dict[str, Any]) -> str:
+    """Human label for a profile, falling back to the provider label."""
+    name = str(profile.get("name") or "").strip()
+    if name:
+        return name
+    provider = LLM_PROVIDER_BY_NAME.get(str(profile.get("provider") or "").strip().lower())
+    return provider.label if provider else str(profile.get("provider") or "Profile")
+
+
+def _profile_api_key(profile: Dict[str, Any]) -> str:
+    return str(profile.get("api_key") or "")
+
+
+def _profile_to_info(profile: Dict[str, Any], active_id: Optional[str]) -> LLMProfileInfo:
+    """Convert a stored profile into its public, secret-free representation."""
+    host = _host()
+    provider_name = str(profile.get("provider") or "").strip().lower()
+    provider = LLM_PROVIDER_BY_NAME.get(provider_name)
+    profile_id = str(profile.get("id") or "")
+    return LLMProfileInfo(
+        id=profile_id,
+        name=_profile_display_name(profile),
+        provider=provider_name,
+        provider_label=provider.label if provider else provider_name,
+        model_name=str(profile.get("model_name") or ""),
+        base_url=str(profile.get("base_url") or (provider.default_base_url if provider else "")),
+        api_key_configured=host._is_configured_secret(
+            _profile_api_key(profile), LLM_API_KEY_PLACEHOLDERS
+        ),
+        api_key_required=provider.api_key_required if provider else True,
+        temperature=host._coerce_float(profile.get("temperature", 0.0), 0.0),
+        timeout_seconds=host._coerce_int(profile.get("timeout_seconds", 120), 120),
+        max_retries=host._coerce_int(profile.get("max_retries", 2), 2),
+        reasoning_effort=str(profile.get("reasoning_effort") or "").strip().lower(),
+        active=bool(profile_id) and profile_id == active_id,
+    )
+
+
+def _profiles_response(store: Dict[str, Any]) -> LLMProfilesResponse:
+    """Build the profile listing payload."""
+    active_id = store.get("active_profile_id")
+    return LLMProfilesResponse(
+        profiles=[_profile_to_info(item, active_id) for item in store.get("profiles", [])],
+        active_profile_id=active_id if isinstance(active_id, str) else None,
+        store_path=_host()._project_relative_path(_profile_store_path()),
+        providers=LLM_PROVIDERS,
+    )
+
+
+def _find_profile_index(store: Dict[str, Any], profile_id: str) -> Optional[int]:
+    for index, item in enumerate(store.get("profiles", [])):
+        if str(item.get("id") or "") == profile_id:
+            return index
+    return None
+
+
+def _validate_profile_fields(
+    payload: LLMProfileUpsertRequest,
+    existing: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Validate an upsert request and return the normalized profile fields."""
+    host = _host()
+    provider_name = payload.provider.strip().lower()
+    provider = LLM_PROVIDER_BY_NAME.get(provider_name)
+    if provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported LLM provider"
+        )
+
+    model_name = payload.model_name.strip()
+    if not model_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Model name is required"
+        )
+
+    if payload.temperature < 0 or payload.temperature > 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Temperature must be between 0 and 2",
+        )
+
+    reasoning_effort = (payload.reasoning_effort or "").strip().lower()
+    if reasoning_effort not in LLM_REASONING_EFFORTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reasoning effort must be none, low, medium, high, or max",
+        )
+
+    base_url = (
+        payload.base_url if payload.base_url is not None else provider.default_base_url
+    ).strip()
+    if provider.auth_type == "oauth":
+        try:
+            from src.providers.openai_codex import validate_codex_base_url
+
+            base_url = validate_codex_base_url(base_url)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+
+    api_key = ""
+    if provider.api_key_env:
+        if payload.clear_api_key:
+            api_key = ""
+        elif payload.api_key is not None and payload.api_key.strip():
+            candidate = payload.api_key.strip()
+            api_key = (
+                candidate
+                if host._is_configured_secret(candidate, LLM_API_KEY_PLACEHOLDERS)
+                else ""
+            )
+        elif existing is not None:
+            api_key = _profile_api_key(existing)
+
+    return {
+        "provider": provider.name,
+        "model_name": model_name,
+        "base_url": base_url,
+        "api_key": api_key,
+        "temperature": payload.temperature,
+        "timeout_seconds": payload.timeout_seconds,
+        "max_retries": payload.max_retries,
+        "reasoning_effort": reasoning_effort,
+    }
+
+
+def _activate_profile(profile: Dict[str, Any]) -> None:
+    """Write a profile into the canonical dotenv and apply it to this process."""
+    host = _host()
+    provider_name = str(profile.get("provider") or "").strip().lower()
+    provider = LLM_PROVIDER_BY_NAME.get(provider_name)
+    if provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported LLM provider"
+        )
+
+    model_name = str(profile.get("model_name") or "").strip()
+    if not model_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Model name is required"
+        )
+
+    base_url = str(profile.get("base_url") or provider.default_base_url).strip()
+    updates: Dict[str, str] = {
+        "LANGCHAIN_PROVIDER": provider.name,
+        "LANGCHAIN_MODEL_NAME": model_name,
+        provider.base_url_env: base_url,
+        "LANGCHAIN_TEMPERATURE": str(host._coerce_float(profile.get("temperature", 0.0), 0.0)),
+        "TIMEOUT_SECONDS": str(host._coerce_int(profile.get("timeout_seconds", 120), 120)),
+        "MAX_RETRIES": str(host._coerce_int(profile.get("max_retries", 2), 2)),
+        "LANGCHAIN_REASONING_EFFORT": str(profile.get("reasoning_effort") or "").strip().lower(),
+    }
+    if provider.api_key_env:
+        updates[provider.api_key_env] = _profile_api_key(profile)
+
+    _persist_settings_updates(updates)
+    _sync_runtime_env(provider, updates)
+
+
+def _seed_profile_store_from_env(store: Dict[str, Any]) -> Dict[str, Any]:
+    """Seed the store with the current dotenv config on first use.
+
+    Runs once, guarded by a persisted ``seeded`` flag, so an intentionally
+    emptied list is never repopulated behind the user's back.
+    """
+    host = _host()
+    if store.get("seeded"):
+        return store
+    if store.get("profiles"):
+        # Legacy store written before the ``seeded`` flag existed: adopt it
+        # instead of reseeding, so existing profiles are never overwritten.
+        store["seeded"] = True
+        _write_profile_store(store)
+        return store
+    env_values = _read_settings_env_values()
+    provider_name = env_values.get("LANGCHAIN_PROVIDER", "").strip().lower()
+    provider = LLM_PROVIDER_BY_NAME.get(provider_name)
+    if provider is None:
+        return store
+    profile = {
+        "id": uuid.uuid4().hex[:12],
+        "name": provider.label,
+        "provider": provider.name,
+        "model_name": env_values.get("LANGCHAIN_MODEL_NAME", provider.default_model),
+        "base_url": env_values.get(provider.base_url_env, provider.default_base_url),
+        "api_key": (
+            env_values.get(provider.api_key_env or "", "") if provider.api_key_env else ""
+        ),
+        "temperature": host._coerce_float(env_values.get("LANGCHAIN_TEMPERATURE", "0.0"), 0.0),
+        "timeout_seconds": host._coerce_int(env_values.get("TIMEOUT_SECONDS", "120"), 120),
+        "max_retries": host._coerce_int(env_values.get("MAX_RETRIES", "2"), 2),
+        "reasoning_effort": env_values.get("LANGCHAIN_REASONING_EFFORT", "").strip().lower(),
+    }
+    store["profiles"] = [profile]
+    store["active_profile_id"] = profile["id"]
+    store["seeded"] = True
+    _write_profile_store(store)
+    return store
+
+
+def _infer_active_profile_id(store: Dict[str, Any]) -> Optional[str]:
+    """Match the live dotenv config against saved profiles."""
+    env_values = _read_settings_env_values()
+    provider_name = env_values.get("LANGCHAIN_PROVIDER", "").strip().lower()
+    provider = LLM_PROVIDER_BY_NAME.get(provider_name)
+    if provider is None:
+        return None
+    model_name = env_values.get("LANGCHAIN_MODEL_NAME", "").strip()
+    base_url = env_values.get(provider.base_url_env, provider.default_base_url).strip()
+    for item in store.get("profiles", []):
+        if str(item.get("provider") or "").strip().lower() != provider.name:
+            continue
+        if str(item.get("model_name") or "").strip() != model_name:
+            continue
+        if str(item.get("base_url") or "").strip() != base_url:
+            continue
+        return str(item.get("id") or "") or None
+    return None
+
+
+def _profiles_store_for_api() -> Dict[str, Any]:
+    """Load the profile store, seeding and re-syncing it with the dotenv."""
+    store = _seed_profile_store_from_env(_read_profile_store())
+    inferred = _infer_active_profile_id(store)
+    if inferred != store.get("active_profile_id"):
+        store["active_profile_id"] = inferred
+        _write_profile_store(store)
+    return store
+
+
+def _sync_active_profile_from_settings(fields: Dict[str, Any]) -> None:
+    """Keep the active profile aligned with a direct settings-form save."""
+    store = _read_profile_store()
+    active_id = store.get("active_profile_id")
+    if not active_id:
+        return
+    index = _find_profile_index(store, active_id)
+    if index is None:
+        return
+    profile = store["profiles"][index]
+    for key, value in fields.items():
+        if value is None:
+            continue
+        profile[key] = value
+    _write_profile_store(store)
 def _persist_settings_updates(updates: Dict[str, str]) -> Dict[str, str]:
     """Persist settings to the canonical user config with legacy migration.
 
@@ -719,6 +1053,20 @@ def register_settings_routes(
             os.environ.pop("OPENAI_API_KEY", None)
 
         saved_values = _persist_settings_updates(updates)
+        _sync_active_profile_from_settings(
+            {
+                "provider": provider.name,
+                "model_name": model_name,
+                "base_url": base_url,
+                "temperature": payload.temperature,
+                "timeout_seconds": payload.timeout_seconds,
+                "max_retries": payload.max_retries,
+                "reasoning_effort": reasoning_effort,
+                "api_key": updates.get(provider.api_key_env, "")
+                if provider.api_key_env
+                else None,
+            }
+        )
         _sync_runtime_env(provider, updates)
         return _build_llm_settings_response(saved_values)
 
@@ -830,3 +1178,95 @@ def register_settings_routes(
         return _build_data_source_settings_response(
             saved_values if updates else _read_settings_env_values()
         )
+    # --- Saved LLM profiles (one-click provider switching) ---
+
+    @app.get(
+        "/settings/llm/profiles",
+        response_model=LLMProfilesResponse,
+        dependencies=[Depends(require_local_or_auth)],
+    )
+    async def list_llm_profiles():
+        """List saved LLM profiles and mark the active one."""
+        return _profiles_response(_profiles_store_for_api())
+
+    @app.post(
+        "/settings/llm/profiles",
+        response_model=LLMProfilesResponse,
+        dependencies=[Depends(require_settings_write_auth)],
+    )
+    async def create_llm_profile(payload: LLMProfileUpsertRequest):
+        """Add a new saved LLM profile."""
+        store = _profiles_store_for_api()
+        fields = _validate_profile_fields(payload)
+        profile: Dict[str, Any] = {
+            "id": uuid.uuid4().hex[:12],
+            "name": payload.name.strip(),
+            **fields,
+        }
+        store["profiles"].append(profile)
+        if not store.get("active_profile_id"):
+            store["active_profile_id"] = profile["id"]
+        _write_profile_store(store)
+        return _profiles_response(store)
+
+    @app.put(
+        "/settings/llm/profiles/{profile_id}",
+        response_model=LLMProfilesResponse,
+        dependencies=[Depends(require_settings_write_auth)],
+    )
+    async def update_llm_profile(profile_id: str, payload: LLMProfileUpsertRequest):
+        """Edit a saved LLM profile; re-applies it when it is the active one."""
+        store = _profiles_store_for_api()
+        index = _find_profile_index(store, profile_id)
+        if index is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found"
+            )
+        existing = store["profiles"][index]
+        fields = _validate_profile_fields(payload, existing)
+        updated = {**existing, **fields}
+        if payload.name.strip():
+            updated["name"] = payload.name.strip()
+        store["profiles"][index] = updated
+        if store.get("active_profile_id") == profile_id:
+            _activate_profile(updated)
+        _write_profile_store(store)
+        return _profiles_response(store)
+
+    @app.delete(
+        "/settings/llm/profiles/{profile_id}",
+        response_model=LLMProfilesResponse,
+        dependencies=[Depends(require_settings_write_auth)],
+    )
+    async def delete_llm_profile(profile_id: str):
+        """Delete a saved LLM profile."""
+        store = _profiles_store_for_api()
+        index = _find_profile_index(store, profile_id)
+        if index is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found"
+            )
+        store["profiles"].pop(index)
+        if store.get("active_profile_id") == profile_id:
+            store["active_profile_id"] = None
+        _write_profile_store(store)
+        return _profiles_response(store)
+
+    @app.post(
+        "/settings/llm/profiles/{profile_id}/activate",
+        response_model=LLMProfilesResponse,
+        dependencies=[Depends(require_settings_write_auth)],
+    )
+    async def activate_llm_profile(profile_id: str):
+        """Switch the running agent to a saved profile."""
+        store = _profiles_store_for_api()
+        index = _find_profile_index(store, profile_id)
+        if index is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found"
+            )
+        profile = store["profiles"][index]
+        _activate_profile(profile)
+        store["active_profile_id"] = profile_id
+        _write_profile_store(store)
+        return _profiles_response(store)

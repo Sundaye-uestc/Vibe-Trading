@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import i18n from "@/i18n";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Database, ExternalLink, KeyRound, Loader2, MessageSquareMore, Package, Play, RefreshCw, RotateCcw, Save, Server, SlidersHorizontal, Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
@@ -8,6 +9,7 @@ import { QVerisSettings } from "@/components/settings/QVerisSettings"; // QVERIS
 import { SourcePrioritySettings } from "@/components/settings/SourcePrioritySettings";
 import { api, isAuthRequiredError, type ChannelRuntimeStatus, type DataSourceSettings, type LLMProviderOption, type LLMSettings } from "@/lib/api";
 import { getApiAuthKey, setApiAuthKey } from "@/lib/apiAuth";
+import { ProfileSwitcher } from "@/components/settings/ProfileSwitcher";
 
 interface LLMFormState {
   provider: string;
@@ -144,6 +146,30 @@ export function Settings() {
       setChannelAction(null);
     }
   };
+
+  const reloadSettings = useCallback(async (notifyOnError: boolean) => {
+    try {
+      const [llmData, dataSourceData] = await Promise.all([
+        api.getLLMSettings(),
+        api.getDataSourceSettings(),
+      ]);
+      setSettings(llmData);
+      setForm(toForm(llmData));
+      setDataSettings(dataSourceData);
+      setSettingsLoadError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : i18n.t("settings.unknownError");
+      setSettingsLoadError(message);
+      if (!notifyOnError) return;
+      if (isAuthRequiredError(error)) {
+        toast.error(message);
+      } else {
+        toast.error(i18n.t("settings.failedToLoadSettings") + ": " + message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   const providers = settings?.providers ?? [];
   const selectedProvider = useMemo<LLMProviderOption | undefined>(
@@ -497,6 +523,8 @@ export function Settings() {
 
       {/* Column ratio matches the QVeris and data-source sections so the
           card seams align down the page. */}
+      <ProfileSwitcher providers={providers} onActivated={() => void reloadSettings(false)} />
+
       <form onSubmit={submit} className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(280px,0.9fr)]">
         <section className="rounded-lg border bg-card p-5 shadow-sm">
           <div className="mb-5 flex items-center gap-2">

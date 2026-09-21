@@ -5,7 +5,14 @@
   "charts": {
     "noPriceData": "Noch keine Kursdaten für dieses Symbol",
     "noCorrelationData": "Wählen Sie mindestens zwei Symbole zum Vergleichen",
-    "noEquityData": "Noch keine Kontowert-Kurve — führen Sie zuerst einen Backtest durch"
+    "noEquityData": "Noch keine Kontowert-Kurve — führen Sie zuerst einen Backtest durch",
+    "indicators": "Indicators ({{count}})",
+    "ma": "MA",
+    "channel": "Channel",
+    "bareK": "Bare K (clear all)",
+    "saveImage": "Save",
+    "zoom": "Zoom",
+    "reset": "Reset"
   },
   "layout": {
     "home": "Startseite",
@@ -13,6 +20,7 @@
     "runtime": "Runtime",
     "scheduled": "Geplant",
     "reports": "Berichte",
+    "portfolio": "Portfolio",
     "alphaZoo": "Alpha Zoo",
     "settings": "Einstellungen",
     "correlation": "Korrelationsmatrix",
@@ -33,7 +41,29 @@
     "sidebar": "Vibe-Trading-Seitenleiste",
     "mainNavigation": "Hauptnavigation",
     "about": "Über",
-    "portfolio": "Portfolio"
+    "skills": "Skills",
+    "changeAvatar": "Change Avatar",
+    "agentAvatar": "Agent Avatar",
+    "userAvatar": "User Avatar",
+    "avatarLetter": "Letter",
+    "avatarPresets": "Presets",
+    "saveAvatar": "Save",
+    "avatarLetterMode": "Letter",
+    "avatarImageMode": "Image",
+    "chooseImage": "Choose Image",
+    "changeImage": "Change Image",
+    "imageSizeHint": "JPG/PNG, max 5MB",
+    "imageTooLarge": "Image must be under 5MB",
+    "invalidImageType": "Please select a valid image file",
+    "imageLoadFailed": "Failed to load image, please retry",
+    "changeBackground": "Change Background",
+    "applyBackground": "Apply Background",
+    "removeBackground": "Remove Background",
+    "backgroundSizeHint": "Upload an image as app background (max 5MB)",
+    "backgroundApplied": "Background applied",
+    "backgroundRemoved": "Background removed",
+    "dragToCrop": "Drag to adjust crop area",
+    "avatarPreview": "Preview"
   },
   "runtime": {
     "monitorBadge": "Runtime-Monitor",
@@ -330,6 +360,27 @@
       "night1": "Immer noch am Nachdenken?",
       "night2": "Lass uns das durchgehen.",
       "night3": "Noch eine Idee, bevor du Schluss machst?"
+    },
+    "title": "Vibe-Trading",
+    "subtitle": "vibe trading with your professional financial agent team",
+    "describePrompt": "Describe a trading strategy to get started.",
+    "tryExample": "Try an example:",
+    "capabilities": {
+      "financeSkills": "Finance Skills Library",
+      "swarmTeams": "Swarm Agent Teams",
+      "autoTools": "Auto-Discovered Tools",
+      "markets": "3 Markets: A-Share · Crypto · HK/US",
+      "connectors": "Trading Connector Profiles",
+      "timeframes": "Minute to Daily Timeframes",
+      "optimizers": "4 Portfolio Optimizers",
+      "riskMetrics": "15+ Risk Metrics",
+      "options": "Options & Derivatives",
+      "pdfWeb": "PDF & Web Research",
+      "factorML": "Factor Analysis & ML",
+      "journalAnalyzer": "Trade Journal Analyzer",
+      "shadowBacktest": "Shadow Account Backtest",
+      "memory": "Persistent Memory",
+      "sessionSearch": "Session Search"
     }
   },
   "settings": {
@@ -377,6 +428,9 @@
     "noProjectLoader": "Kein Projekt-Loader",
     "pythonPackageInstalled": "Python-Paket installiert",
     "pythonPackageNotInstalled": "Python-Paket nicht installiert",
+    "skillDataSourcesTitle": "Skill Data Sources",
+    "skillDataSourcesDesc": "These data sources are provided by installed skills and require no API key configuration.",
+    "skillDataSourceVersion": "Version",
     "localApiAccess": "Lokaler API-Zugriff",
     "localApiAccessDesc": "Für Remote- oder private Web-UI-Bereitstellungen geben Sie den Server-API-Schlüssel einmal in diesem Browser ein. Bei lokaler Verwendung kann das Feld leer bleiben.",
     "serverApiKey": "Server-API-Schlüssel",
@@ -489,7 +543,44 @@
     "oauth": "OAuth",
     "authentication": "Authentifizierung",
     "apiKey": "API-Schlüssel",
-    "tushareTokenDesc": "Verwendet für China-A-Aktien, Futures, Fonds und Makrodaten. Falls nicht gesetzt, greift das Projekt auf AKShare zurück, sofern verfügbar."
+    "tushareTokenDesc": "Verwendet für China-A-Aktien, Futures, Fonds und Makrodaten. Falls nicht gesetzt, greift das Projekt auf AKShare zurück, sofern verfügbar.",
+    "exactModelIdHint": "Use the exact model id required by your provider.",
+    "changingProvidersHint": "Changing providers updates the recommended model and endpoint.",
+    "leaveBlankToKeep": "Leave blank to keep the current key",
+    "oauthProviderDesc": "This provider uses OAuth. Run: {{command}}",
+    "clearSavedApiKey": "Clear saved API key",
+    "clearSavedTushareToken": "Clear saved Tushare token",
+    "reasoningEffortHint": "How hard the model thinks before answering. Higher is more thorough but slower; leave Off for fastest replies.",
+    "dataSourcesPageDesc": "Configure optional market data credentials used by backtests and research agents.",
+    "tushareTokenHint": "Used for China A-share, futures, fund, and macro data. If unset, the project falls back to AKShare where available.",
+    "settingsUnavailable": "Settings are unavailable",
+    "dataSourceSettingsTitle": "Data Source Settings",
+    "saveDataSources": "Save data source settings",
+    "failedToLoadSettings": "Failed to load settings",
+    "profilesTitle": "Saved Configurations",
+    "profilesDesc": "Save multiple LLM configurations and switch between models with one click, without editing config files by hand.",
+    "active": "Active",
+    "activate": "Switch",
+    "activating": "Switching",
+    "activated": "Switched to {{name}}",
+    "activateFailed": "Switch failed",
+    "addProfile": "New configuration",
+    "editProfile": "Edit configuration",
+    "newProfile": "New configuration",
+    "profileName": "Configuration name",
+    "profileNamePlaceholder": "e.g. DeepSeek Official",
+    "profileNameHint": "Leave blank to use the provider name.",
+    "noProfiles": "No saved configurations yet. Click \"New configuration\" to add one.",
+    "saveProfile": "Save configuration",
+    "profileSaved": "Configuration saved",
+    "deleteProfile": "Delete configuration",
+    "deleteProfileConfirm": "Delete configuration \"{{name}}\"?",
+    "profileDeleted": "Configuration deleted",
+    "apiKeySet": "Key configured",
+    "apiKeyMissing": "No key",
+    "profileStore": "Profile store",
+    "loadProfilesFailed": "Failed to load configurations",
+    "cancel": "Cancel"
   },
   "qveris": {
     "title": "QVeris-Tool-Marktplatz",
@@ -607,7 +698,13 @@
     "resumeConnector": "Connector fortsetzen",
     "resumeConnectorTitle": "Kill-Switch löschen und Connector-Aktivität wieder aktivieren",
     "connectorResumed": "Connector fortgesetzt",
-    "failedToResumeConnector": "Connector konnte nicht fortgesetzt werden."
+    "failedToResumeConnector": "Connector konnte nicht fortgesetzt werden.",
+    "researchGoalMenu": "Research Goal",
+    "checkTradingConnectorMenu": "Check Trading Connector",
+    "analyzeConnectorPortfolioMenu": "Analyze Connector Portfolio",
+    "uploadPdf": "Upload PDF document",
+    "haltConnectorRuntime": "Halt connector runtime",
+    "haltConnectorRuntimeTooltip": "Halt the connector runtime immediately and wait for confirmation"
   },
   "runDetail": {
     "title": "Durchlauf-Details",
@@ -1079,7 +1176,10 @@
     "benchStreamError": "Benchmark-Stream-Fehler",
     "job": "Job {{id}}…",
     "compareStreamError": "Vergleichs-Stream-Fehler",
-    "failedToStartComparison": "Vergleich konnte nicht gestartet werden"
+    "failedToStartComparison": "Vergleich konnte nicht gestartet werden",
+    "deltaSort": "Delta {{sort}}",
+    "alphaPlaceholder": "alpha101_1, alpha101_2, gtja191_5",
+    "decayDaysTitle": "Predictive half-life in days. The width of the rolling window over which the alpha's signal decays to 0.5. Estimated from the IC half-life; larger means more persistent."
   },
   "validation": {
     "noData": "Keine Validierungsdaten verfügbar.",
@@ -1115,7 +1215,10 @@
     "actualLabel": "Tatsächlich",
     "medianLabel": "Median",
     "windowReturns": "Rendite pro Fenster",
-    "tradeNumber": "Trade #"
+    "tradeNumber": "Trade #",
+    "sharpe": "Sharpe",
+    "tradesCol": "Trades",
+    "noValidation": "No validation data available."
   },
   "thinking": {
     "processing": "Verarbeitung",
@@ -1166,7 +1269,9 @@
     "runnerControlFailed": "Runner-Steuerung fehlgeschlagen.",
     "startRunnerTitle": "Persistenter Runner starten",
     "stopRunnerTitle": "Persistenter Runner stoppen",
-    "expiresAt": "Läuft ab {{time}}"
+    "expiresAt": "Läuft ab {{time}}",
+    "noConnectorConnected": "no connector connected",
+    "daysHours": "{{d}}d{{h}}h"
   },
   "swarmStatus": {
     "agents": "{{done}}/{{total}} Agents",
@@ -1399,7 +1504,10 @@
     "update_hypothesis": "Forschungshypothese aktualisieren",
     "update_research_goal_status": "Zielstatus aktualisieren",
     "web_search": "Web durchsuchen",
-    "write_file": "Code generieren"
+    "write_file": "Code generieren",
+    "toolsRunning": "{{count}} tools running",
+    "toolsRunningTitle": "{{count}} tools running",
+    "moreOverflow": "...+{{count}} more"
   },
   "runDashboard": {
     "eyebrow": "Quantitative Forschung · Backtest",
@@ -1621,6 +1729,32 @@
       "unknownTestError": "Der Connector hat einen unbekannten Fehler zurückgegeben.",
       "delete": "Löschen",
       "configured": "Erforderliche Zugangsdaten konfiguriert"
+    }
+  },
+  "skills": {
+    "title": "Installed Skills",
+    "subtitle": "Browse installed skill modules — each provides specific methodologies or data access capabilities",
+    "countLabel": "{{count}} skills total",
+    "searchPlaceholder": "Search skill name or description…",
+    "noResults": "No matching skills found",
+    "noSkills": "No skills installed yet",
+    "loadError": "Failed to load skills",
+    "detail": {
+      "back": "Back to skill list",
+      "category": "Category",
+      "metadata": "Metadata",
+      "source": "Skill Content"
+    },
+    "categories": {
+      "strategy": "Strategy",
+      "analysis": "Analysis",
+      "data-source": "Data Source",
+      "asset-class": "Asset Class",
+      "crypto": "Crypto",
+      "flow": "Capital Flow",
+      "tool": "Tool",
+      "risk-analysis": "Risk Analysis",
+      "other": "Other"
     }
   }
 }

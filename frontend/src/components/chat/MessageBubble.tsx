@@ -9,6 +9,7 @@ import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { toast } from "sonner";
 import { normalizeMathDelimiters } from "@/lib/markdown";
+import { formatTimestamp } from "@/lib/formatters";
 import type { AgentMessage } from "@/types/agent";
 import type { StoredAgentMessage } from "@/stores/agent";
 import { AgentAvatar, getUserAvatarConfig, type AvatarConfig } from "./AgentAvatar";
@@ -236,6 +237,7 @@ export const MessageBubble = memo(function MessageBubble({ msg, onRetry }: Props
     const meta = msg.meta;
     const attachments = meta?.attachments
       ?? (meta?.attachment ? [meta.attachment] : []);
+    const ts = msg.timestamp ? formatTimestamp(msg.timestamp) : null;
     return (
       <div className="flex justify-end group">
         <div className="max-w-[72%] max-h-[40vh] overflow-y-auto break-words rounded-[18px] bg-muted px-4 py-3 text-[15px] text-foreground leading-relaxed whitespace-pre-wrap">

@@ -1,6 +1,6 @@
 import i18n from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router";
 import { ArrowLeft, ExternalLink, Loader2, Package, Search, Tag } from "lucide-react";
 import { toast } from "sonner";
 import { api, type SkillSummary, type SkillDetailResponse } from "@/lib/api";

@@ -41,6 +41,10 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5899,
+      // Bind dual-stack. Vite's default host ("localhost") resolves to
+      // IPv6 loopback (::1) first on Windows, so http://127.0.0.1:5899
+      // refuses connections. "::" accepts both IPv4 and IPv6.
+      host: "::",
       proxy: {
         ...Object.fromEntries(PROXY_PATHS.map((p) => [p, apiProxy])),
         // SPA RunDetail page — only the two-segment ``/runs/{id}``

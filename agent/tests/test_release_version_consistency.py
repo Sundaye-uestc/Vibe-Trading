@@ -46,7 +46,10 @@ def test_skill_manifest_version_matches_pyproject() -> None:
 
 def test_docker_image_label_matches_pyproject() -> None:
     """The OCI version label is what `docker inspect` reports to a user."""
-    text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    dockerfile = REPO_ROOT / "Dockerfile"
+    if not dockerfile.exists():
+        pytest.skip("Dockerfile is not shipped in this checkout")
+    text = dockerfile.read_text(encoding="utf-8")
     found = re.search(r'org\.opencontainers\.image\.version="([^"]+)"', text)
     assert found is not None, "Dockerfile declares no image version label"
     assert found.group(1) == _packaged_version()

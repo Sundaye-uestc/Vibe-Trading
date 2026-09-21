@@ -34,8 +34,6 @@ per-source skill.
 | tickerall | Forex & metals (same broker MT5 feed, hosted) | Yes (`TICKERALL_API_KEY` + `TICKERALL_ACCOUNT_ID`; read-only) | Hosted API (any OS, no terminal) | data-routing (runner-internal; **explicit `source=tickerall` only**) |
 | local | User CSV/parquet on disk | No | Offline | data-routing (runner-internal) |
 | eastmoney | A-shares, HK, US equities | No (IP-throttled) | Unrestricted | data-routing |
-| tonghuashun | A-shares (hot stocks, northbound, consensus EPS) | No | Unrestricted | a-stock-data |
-| cninfo | A-shares (SSE/SZSE/BSE filings) | No | Unrestricted | a-stock-data |
 | sina | A-shares (financial statements), US (daily OHLCV) | No (IP-throttled) | Unrestricted | data-routing |
 | stooq | US equities (daily OHLCV) | No | Unrestricted | data-routing |
 | yahoo | US, HK, Canada (TSX/TSXV) equities | No (IP-throttled) | Needs Yahoo access | data-routing |
@@ -44,6 +42,16 @@ per-source skill.
 | tiingo | US equities | Yes (`TIINGO_API_KEY`) | Unrestricted | data-routing |
 | fmp | US equities | Yes (`FMP_API_KEY`) | Unrestricted | data-routing |
 | qveris | Global multi-asset (paid, credits) | Yes (`QVERIS_API_KEY` / Settings) | QVeris API | qveris <!-- QVERIS-INTEGRATION --> |
+
+### Research-Only Providers (not backtest loaders)
+
+These providers back the A-share research tools below. They are *not*
+registered in `backtest.loaders.registry.VALID_SOURCES`, so they can never be
+selected as a backtest OHLCV source — reach them through their MCP tool.
+No auth key and no China network requirement for either.
+
+- **Tonghuashun** (同花顺) — hot stocks, northbound flow, consensus EPS.
+- **Cninfo** (巨潮) — SSE / SZSE / BSE exchange filings.
 
 ## Capability → Tool Routing
 

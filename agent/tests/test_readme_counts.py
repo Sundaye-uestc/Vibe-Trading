@@ -45,13 +45,13 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENT_DIR = Path(__file__).resolve().parents[1]
 
+# Only the locales this checkout actually ships. The upstream project publishes
+# six READMEs; this personal-use fork keeps the English and Chinese ones and
+# drops the rest along with every other distribution-only file, so the
+# cross-locale consistency checks below are scoped to what exists here.
 READMES = (
     "README.md",
     "README_zh.md",
-    "README_ja.md",
-    "README_ko.md",
-    "README_ar.md",
-    "README_es.md",
 )
 
 # Feature badges in the order they appear in every README. Each entry is the
@@ -406,6 +406,12 @@ def test_every_skill_count_in_the_prose_is_current(name: str) -> None:
     lines carry issue numbers next to the word "skill", and the MCP tool list
     contains ``list_skills`` beside its own count — none of those is a claim
     about how many skills ship. ``8899`` is the server port.
+
+    Markdown table rows are out of scope too. The category table's counts are
+    checked against the frontmatter by
+    ``test_the_skill_category_table_matches_the_frontmatter``, and one of the
+    rows names a skill (``serenity-skill``) whose own name contains the word,
+    so the table would otherwise be read as a stale prose claim.
     """
     skill_words = ("skill", "Skill", "스킬", "مهارة", "المهارات")
     expected = str(_bundled_skill_count())
@@ -417,6 +423,7 @@ def test_every_skill_count_in_the_prose_is_current(name: str) -> None:
         and re.search(r"\d\d", line)
         and "8899" not in line
         and not line.startswith("- @")
+        and not line.lstrip().startswith("|")
         and len(re.findall(r"`[a-z_]+`", line)) < 5
         and not NEWS_BULLET.match(line)
         and expected not in line

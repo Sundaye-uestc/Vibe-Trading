@@ -18,6 +18,8 @@ design:
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUIDE = REPO_ROOT / "AGENT_CONTRIBUTOR_GUIDE.md"
 
@@ -34,6 +36,8 @@ def _is_intentionally_absent(path: str) -> bool:
 
 def test_guide_referenced_paths_exist() -> None:
     """Every required in-repo path referenced by the contributor guide must exist."""
+    if not GUIDE.exists():
+        pytest.skip("AGENT_CONTRIBUTOR_GUIDE.md is not shipped in this checkout")
     text = GUIDE.read_text(encoding="utf-8")
     ignored = set(_IGNORED_RE.findall(text))
     referenced = set(_PATH_RE.findall(text)) - ignored

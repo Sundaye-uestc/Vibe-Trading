@@ -1,5 +1,5 @@
 <p align="center">
-  <b>English</b> | <a href="README_zh.md">中文</a> | <a href="README_ja.md">日本語</a> | <a href="README_ko.md">한국어</a> | <a href="README_ar.md">العربية</a> | <a href="README_es.md">Español</a>
+  <b>English</b> | <a href="README_zh.md">中文</a>
 </p>
 
 <p align="center">
@@ -516,16 +516,16 @@ Beyond OHLCV, **22 read-only data tools** reach into fundamentals & flow — fun
 Detailed inventories are folded below to keep the main README scannable. Open them when you want to inspect the available building blocks.
 
 <details>
-<summary><b>Finance Skill Library</b> <sub>90 skills across 9 categories</sub></summary>
+<summary><b>Finance Skill Library</b> <sub>92 skills across 9 categories</sub></summary>
 
-- 📊 90 specialized finance skills organized into 9 categories
+- 📊 92 specialized finance skills organized into 9 categories
 - 🌐 Complete coverage from traditional markets to crypto & DeFi
 - 🔬 Comprehensive capabilities spanning data sourcing to quantitative research
 
 | Category | Skills | Examples |
 |----------|--------|----------|
-| Data Source | 10 | `data-routing`, `tushare`, `yfinance`, `okx-market`, `akshare`, `mootdx`, `ccxt`, `eastmoney`, `sec-edgar`, `qveris` |
-| Strategy | 19 | `strategy-generate`, `cross-market-strategy`, `technical-basic`, `candlestick`, `ichimoku`, `elliott-wave`, `smc`, `multi-factor`, `ml-strategy` |
+| Data Source | 11 | `data-routing`, `tushare`, `yfinance`, `okx-market`, `akshare`, `mootdx`, `ccxt`, `eastmoney`, `sec-edgar`, `qveris`, `a-stock-data` |
+| Strategy | 20 | `strategy-generate`, `cross-market-strategy`, `technical-basic`, `candlestick`, `ichimoku`, `elliott-wave`, `smc`, `multi-factor`, `ml-strategy`, `serenity-skill` |
 | Analysis | 23 | `factor-research`, `correlation-regime`, `macro-analysis`, `global-macro`, `valuation-model`, `investor-lenses`, `credit-analysis`, `dividend-analysis` |
 | Asset Class | 9 | `options-strategy`, `options-advanced`, `convertible-bond`, `etf-analysis`, `asset-allocation`, `sector-rotation` |
 | Crypto | 7 | `perp-funding-basis`, `liquidation-heatmap`, `stablecoin-flow`, `defi-yield`, `onchain-analysis` |
@@ -1383,7 +1383,7 @@ Posting `{}` schedules a template on its own suggested cadence with its declared
 
 ## 🔌 MCP Plugin
 
-Vibe-Trading exposes 74 MCP tools for any MCP-compatible client. Runs as a stdio subprocess — no server setup needed. Core research tools work with zero API keys for HK/US/crypto; trading connector tools use the selected connector profile, and `run_swarm` needs an LLM key.
+Vibe-Trading exposes 79 MCP tools for any MCP-compatible client. Runs as a stdio subprocess — no server setup needed. Core research tools work with zero API keys for HK/US/crypto; trading connector tools use the selected connector profile, and `run_swarm` needs an LLM key.
 
 **Environment variables:** the client spawns the server itself, so a shell `export` never reaches it — set them in the client's `env` block. Generated backtest code is sandboxed to the allowed run roots, so writing results into a workspace of your own needs `VIBE_TRADING_ALLOWED_RUN_ROOTS`:
 
@@ -1452,7 +1452,7 @@ with `--host` / `--port`.
 
 </details>
 
-**MCP tools exposed (74):** `list_skills`, `load_skill`, `start_research_goal`, `get_research_goal`, `add_goal_evidence`, `update_research_goal_status`, `backtest`, `factor_analysis`, `alpha_zoo`, `alpha_bench`, `analyze_options`, `analyze_options_payoff`, `pattern_recognition`, `read_url`, `read_document`, `web_search`, `write_file`, `read_file`, `list_strategies`, `query_strategies`, `get_strategy_evidence`, `refresh_strategy_evidence`, `trading_connections`, `trading_select_connection`, `trading_check`, `trading_account`, `trading_positions`, `trading_orders`, `trading_quote`, `trading_history`, `list_swarm_presets`, `run_swarm`, `get_market_data`, `get_fund_flow`, `get_dragon_tiger`, `get_northbound_flow`, `get_margin_trading`, `get_block_trades`, `get_shareholder_count`, `get_lockup_expiry`, `get_sector_info`, `get_research_reports`, `get_stock_news`, `get_sec_filings`, `get_financial_statements`, `get_options_chain`, `get_stock_profile`, `screen_market`, `search_symbol`, `get_macro_series`, `iwencai_search`, `qveris_search`, `qveris_inspect`, `qveris_execute`, `get_institutional_holdings`, `etf_holdings`, `prediction_market`, `research_papers`, `get_swarm_status`, `get_run_result`, `list_runs`, `reap_stale_runs`, `retry_run`, `analyze_trade_journal`, `extract_shadow_strategy`, `run_shadow_backtest`, `render_shadow_report`, `scan_shadow_signals`, `quantlib_call`, `cashflow_performance`, `orderbook_depth`, `sentiment`, `technical_indicators`, `get_fundamentals`.
+**MCP tools exposed (79):** `list_skills`, `load_skill`, `start_research_goal`, `get_research_goal`, `add_goal_evidence`, `update_research_goal_status`, `backtest`, `factor_analysis`, `alpha_zoo`, `alpha_bench`, `analyze_options`, `analyze_options_payoff`, `pattern_recognition`, `read_url`, `read_document`, `web_search`, `write_file`, `read_file`, `list_strategies`, `query_strategies`, `get_strategy_evidence`, `refresh_strategy_evidence`, `trading_connections`, `trading_select_connection`, `trading_check`, `trading_account`, `trading_positions`, `trading_orders`, `trading_quote`, `trading_history`, `list_swarm_presets`, `run_swarm`, `get_market_data`, `get_fund_flow`, `get_dragon_tiger`, `get_northbound_flow`, `get_margin_trading`, `get_block_trades`, `get_shareholder_count`, `get_lockup_expiry`, `get_sector_info`, `get_research_reports`, `get_stock_news`, `get_sec_filings`, `get_financial_statements`, `get_options_chain`, `get_stock_profile`, `screen_market`, `search_symbol`, `get_macro_series`, `iwencai_search`, `qveris_search`, `qveris_inspect`, `qveris_execute`, `get_institutional_holdings`, `etf_holdings`, `prediction_market`, `research_papers`, `get_swarm_status`, `get_run_result`, `list_runs`, `reap_stale_runs`, `retry_run`, `analyze_trade_journal`, `extract_shadow_strategy`, `run_shadow_backtest`, `render_shadow_report`, `scan_shadow_signals`, `quantlib_call`, `cashflow_performance`, `orderbook_depth`, `sentiment`, `technical_indicators`, `get_fundamentals`, `tencent_quote`, `ths_hot_reason`, `hsgt_realtime`, `cninfo_announcements`, `sina_financial_report`.
 
 ### SWARM external MCP tools
 
@@ -1476,7 +1476,7 @@ Browse on ClawHub: [clawhub.ai/skills/vibe-trading](https://clawhub.ai/skills/vi
 <details>
 <summary><b>OpenSpace — self-evolving skills</b></summary>
 
-All 90 finance skills are published on [open-space.cloud](https://open-space.cloud) and evolve autonomously through OpenSpace's self-evolution engine.
+All 92 finance skills are published on [open-space.cloud](https://open-space.cloud) and evolve autonomously through OpenSpace's self-evolution engine.
 
 To use with OpenSpace, add both MCP servers to your agent config:
 
@@ -1498,7 +1498,7 @@ To use with OpenSpace, add both MCP servers to your agent config:
 }
 ```
 
-OpenSpace will auto-discover all 90 skills, enabling auto-fix, auto-improve, and community sharing. Search for Vibe-Trading skills via `search_skills("finance backtest")` in any OpenSpace-connected agent.
+OpenSpace will auto-discover all 92 skills, enabling auto-fix, auto-improve, and community sharing. Search for Vibe-Trading skills via `search_skills("finance backtest")` in any OpenSpace-connected agent.
 
 </details>
 
@@ -1826,13 +1826,13 @@ Vibe-Trading/
 ├── agent/                          # Backend (Python)
 │   ├── cli/                        # CLI package — interactive TUI + subcommands
 │   ├── api_server.py               # FastAPI server — runs, sessions, upload, swarm, SSE
-│   ├── mcp_server.py               # MCP server — 74 tools for OpenClaw / Claude Desktop
+│   ├── mcp_server.py               # MCP server — 79 tools for OpenClaw / Claude Desktop
 │   │
 │   ├── src/
 │   │   ├── agent/                  # ReAct agent core
 │   │   │   ├── loop.py             #   5-layer compression + read/write tool batching
 │   │   │   ├── context.py          #   system prompt + auto-recall from persistent memory
-│   │   │   ├── skills.py           #   skill loader (90 bundled + user-created via CRUD)
+│   │   │   ├── skills.py           #   skill loader (92 bundled + user-created via CRUD)
 │   │   │   ├── tools.py            #   tool base class + registry
 │   │   │   ├── memory.py           #   lightweight workspace state per run
 │   │   │   ├── frontmatter.py      #   shared YAML frontmatter parser
@@ -1841,7 +1841,7 @@ Vibe-Trading/
 │   │   ├── memory/                 # Cross-session persistent memory
 │   │   │   └── persistent.py       #   file-based memory (~/.vibe-trading/memory/)
 │   │   │
-│   │   ├── tools/                  # 107 auto-discovered agent tools
+│   │   ├── tools/                  # 112 auto-discovered agent tools
 │   │   │   ├── backtest_tool.py    #   run backtests
 │   │   │   ├── remember_tool.py    #   cross-session memory (save/recall/forget)
 │   │   │   ├── skill_writer_tool.py #  skill CRUD (save/patch/delete/file)
@@ -1859,7 +1859,7 @@ Vibe-Trading/
 │   │   ├── api/                    # FastAPI route modules
 │   │   │   └── alpha_routes.py     #   /alpha/list, /alpha/{id}, /alpha/bench, SSE stream
 │   │   │
-│   │   ├── skills/                 # 90 finance skills in 9 categories (SKILL.md each)
+│   │   ├── skills/                 # 92 finance skills in 9 categories (SKILL.md each)
 │   │   ├── swarm/                  # Swarm DAG execution engine
 │   │   │   └── presets/            #   30 swarm preset YAML definitions
 │   │   ├── session/                # Multi-turn chat + FTS5 session search

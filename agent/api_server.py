@@ -28,6 +28,12 @@ for _s in ("stdout", "stderr"):
     if callable(_r):
         _r(encoding="utf-8", errors="replace")
 
+# Give the application logger a real handler. Without one every warning lands
+# on Python's lastResort stderr writer, which start.py does not read.
+from src.logging_setup import configure_logging as _configure_logging  # noqa: E402
+
+_configure_logging()
+
 # ---------------------------------------------------------------------------
 # Extracted infrastructure — re-exported for route-module and test access
 # ---------------------------------------------------------------------------

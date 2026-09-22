@@ -20,17 +20,33 @@ FRONTEND_CMD = ["npm.cmd", "run", "dev"]
 FRONTEND_DIR = ROOT / "frontend"
 
 
-def stream_output(proc: subprocess.Popen, label: str) -> None:
-    """Print process stdout/stderr line-by-line with a [label] prefix."""
-    for pipe, prefix in [(proc.stdout, label), (proc.stderr, f"{label}:err")]:
-        if pipe is None:
-            continue
-        try:
-            for line in pipe:
-                text = line.decode("utf-8", errors="replace").rstrip("\n")
-                print(f"[{prefix}] {text}", flush=True)
-        except (ValueError, OSError):
-            break
+def stream_output(pipe, prefix: str) -> None:
+    """Forward one subprocess stream to our stdout with a ``[prefix]`` tag.
+
+    One thread per stream, never one thread for both: a process whose stderr is
+    not drained blocks forever on the first write past the OS pipe buffer, and a
+    server that never exits never closes stdout. Reading stdout to EOF before
+    touching stderr is therefore a deadlock waiting for enough stderr output --
+    and ``agent/src/core/runner.py`` logs its backtest progress to stderr.
+    """
+    if pipe is None:
+        return
+    try:
+        for line in pipe:
+            text = line.decode("utf-8", errors="replace").rstrip("\n")
+            print(f"[{prefix}] {text}", flush=True)
+    except (ValueError, OSError):
+        pass
+
+
+# The backend prints UTF-8 (skill docs, Chinese market data, agent reports).
+# Without this its Windows console code page is the source of truth and every
+# non-ASCII log line is mangled, so pin the encoding on the child instead.
+CHILD_ENV = {
+    "PYTHONUNBUFFERED": "1",
+    "PYTHONUTF8": "1",
+    "PYTHONIOENCODING": "utf-8",
+}
 
 
 def main() -> None:
@@ -50,6 +66,8 @@ def main() -> None:
         print("    (or run with --backend only)")
 
     procs: list[subprocess.Popen] = []
+    # (pipe, tag) pairs, one entry per stream so every one gets its own reader.
+    streams: list[tuple[object, str]] = []
 
     def shutdown(sig, frame):
         print("\n[!] Shutting down...", flush=True)
@@ -62,28 +80,34 @@ def main() -> None:
 
     if run_backend:
         print(f"[backend] Starting on http://127.0.0.1:8899 ...")
-        procs.append(
-            subprocess.Popen(
-                BACKEND_CMD,
-                cwd=str(ROOT),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
-            )
+        backend_proc = subprocess.Popen(
+            BACKEND_CMD,
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, **CHILD_ENV},
         )
+        procs.append(backend_proc)
+        streams += [
+            (backend_proc.stdout, "backend"),
+            (backend_proc.stderr, "backend:err"),
+        ]
 
     if run_frontend:
         print(f"[frontend] Starting on http://localhost:5899 ...")
-        procs.append(
-            subprocess.Popen(
-                FRONTEND_CMD,
-                cwd=str(FRONTEND_DIR),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=True,
-                env={**os.environ, "BROWSER": "none"},
-            )
+        frontend_proc = subprocess.Popen(
+            FRONTEND_CMD,
+            cwd=str(FRONTEND_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=True,
+            env={**os.environ, "BROWSER": "none"},
         )
+        procs.append(frontend_proc)
+        streams += [
+            (frontend_proc.stdout, "frontend"),
+            (frontend_proc.stderr, "frontend:err"),
+        ]
 
     print("=" * 50)
     if run_backend:
@@ -96,8 +120,8 @@ def main() -> None:
     from threading import Thread
 
     threads = [
-        Thread(target=stream_output, args=(p, ["backend", "frontend"][i][:8]), daemon=True)
-        for i, p in enumerate(procs)
+        Thread(target=stream_output, args=(pipe, tag), daemon=True)
+        for pipe, tag in streams
     ]
     for t in threads:
         t.start()

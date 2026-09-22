@@ -1419,6 +1419,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     """
     raw_argv = list(sys.argv[1:] if argv is None else argv)
 
+    # Install the application log handler before anything can warn, so those
+    # warnings reach stdout instead of Python's bare lastResort stderr writer.
+    from src.logging_setup import configure_logging as _configure_logging
+
+    _configure_logging()
+
     # One-time move of pre-#904 code-relative state into the runtime root.
     # A failed migration must never block the CLI.
     try:

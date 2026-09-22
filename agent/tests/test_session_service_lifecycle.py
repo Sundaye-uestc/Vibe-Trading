@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 
@@ -20,6 +21,135 @@ class _DummyIndex:
 
     def index_message(self, session_id: str, role: str, content: str) -> None:
         del session_id, role, content
+
+
+class _RecordingIndex:
+    """Records index mutations so the service's index sync can be asserted."""
+
+    def __init__(self) -> None:
+        self.sessions: dict[str, str] = {}
+        self.removed: list[str] = []
+
+    def index_session(self, session_id: str, title: str) -> None:
+        self.sessions[session_id] = title
+
+    def index_message(self, session_id: str, role: str, content: str) -> None:
+        del session_id, role, content
+
+    def remove_session(self, session_id: str) -> int:
+        self.removed.append(session_id)
+        self.sessions.pop(session_id, None)
+        return 0
+
+    def indexed_session_ids(self) -> set[str]:
+        return set(self.sessions)
+
+
+def _service_with_index(
+    tmp_path: Path, monkeypatch
+) -> tuple[SessionService, _RecordingIndex]:
+    index = _RecordingIndex()
+    monkeypatch.setattr("src.session.service.get_shared_index", lambda: index)
+    service = SessionService(
+        store=SessionStore(tmp_path / "sessions"),
+        event_bus=EventBus(),
+        runs_dir=tmp_path / "runs",
+    )
+    return service, index
+
+
+# ---------------------------------------------------------------------------
+# Search-index sync
+#
+# The index is what cross-session search reads, so a delete or rename that only
+# touches the store leaves search showing sessions that are gone, or titles that
+# no longer exist.
+# ---------------------------------------------------------------------------
+
+
+class TestSearchIndexSync:
+    def test_rename_refreshes_the_indexed_title(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        service, index = _service_with_index(tmp_path, monkeypatch)
+        session = service.create_session(title="Old title")
+        assert index.sessions[session.session_id] == "Old title"
+
+        updated = service.set_session_title(session.session_id, "New title")
+
+        assert updated is not None
+        assert index.sessions[session.session_id] == "New title"
+        assert service.get_session(session.session_id).title == "New title"
+
+    def test_rename_of_a_missing_session_returns_none(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        service, index = _service_with_index(tmp_path, monkeypatch)
+
+        assert service.set_session_title("missing", "x") is None
+        assert index.sessions == {}
+
+    def test_delete_removes_the_session_from_the_index(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        service, index = _service_with_index(tmp_path, monkeypatch)
+        session = service.create_session(title="Doomed")
+
+        assert service.delete_session(session.session_id) is True
+
+        assert index.removed == [session.session_id]
+        assert session.session_id not in index.sessions
+
+    def test_failed_delete_leaves_the_index_alone(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        service, index = _service_with_index(tmp_path, monkeypatch)
+        kept = service.create_session(title="Kept")
+
+        assert service.delete_session("missing") is False
+
+        assert index.removed == []
+        assert kept.session_id in index.sessions
+
+
+# ---------------------------------------------------------------------------
+# Startup index consistency check
+# ---------------------------------------------------------------------------
+
+
+class TestStartupIndexConsistencyCheck:
+    def test_warns_about_a_session_the_index_has_but_disk_does_not(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        index = _RecordingIndex()
+        index.sessions["ghost"] = "Gone"
+        monkeypatch.setattr("src.session.service.get_shared_index", lambda: index)
+
+        with caplog.at_level(logging.WARNING, logger="src.session.service"):
+            SessionService(
+                store=SessionStore(tmp_path / "sessions"),
+                event_bus=EventBus(),
+                runs_dir=tmp_path / "runs",
+            )
+
+        assert "ghost" in caplog.text
+
+    def test_stays_quiet_when_every_indexed_session_is_on_disk(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        store = SessionStore(tmp_path / "sessions")
+        service, _ = _service_with_index(tmp_path, monkeypatch)
+        service.create_session(title="Present")
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="src.session.service"):
+            SessionService(
+                store=store,
+                event_bus=EventBus(),
+                runs_dir=tmp_path / "runs",
+            )
+
+        assert caplog.text == ""
 
 
 def _service(tmp_path: Path, monkeypatch) -> SessionService:

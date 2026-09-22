@@ -220,3 +220,76 @@ class TestReindex:
         results = index.search("reindex probe")
         assert len(results) >= 1
         assert results[0].session_id == "session-001"
+
+
+# ---------------------------------------------------------------------------
+# remove_session / indexed_session_ids
+# ---------------------------------------------------------------------------
+
+
+class TestRemoveSession:
+    """A deleted session must leave the index with it.
+
+    The index is what cross-session search reads, so a row left behind keeps a
+    deleted session findable even though its directory is gone.
+    """
+
+    def test_removed_session_is_no_longer_searchable(
+        self, index: SessionSearchIndex
+    ) -> None:
+        index.index_session("s1", "Delete me")
+        index.index_message("s1", "user", "unforgettable bitcoin thesis")
+        assert index.search("bitcoin") != []
+
+        removed = index.remove_session("s1")
+
+        assert removed == 1
+        assert index.search("bitcoin") == []
+        assert "s1" not in index.indexed_session_ids()
+
+    def test_removing_one_session_keeps_the_others(
+        self, index: SessionSearchIndex
+    ) -> None:
+        index.index_session("s1", "First")
+        index.index_message("s1", "user", "shared keyword alpha")
+        index.index_session("s2", "Second")
+        index.index_message("s2", "user", "shared keyword beta")
+
+        index.remove_session("s1")
+
+        assert index.indexed_session_ids() == {"s2"}
+        results = index.search("shared keyword")
+        assert {m.session_id for m in results} == {"s2"}
+
+    def test_removing_an_unknown_session_is_a_no_op(
+        self, index: SessionSearchIndex
+    ) -> None:
+        index.index_session("s1", "Survivor")
+
+        assert index.remove_session("missing") == 0
+        assert index.indexed_session_ids() == {"s1"}
+
+    def test_reindex_after_removal_restores_from_disk(
+        self, index: SessionSearchIndex, tmp_path: Path
+    ) -> None:
+        import json
+
+        store_dir = tmp_path / "sessions"
+        s_dir = store_dir / "s1"
+        s_dir.mkdir(parents=True)
+        (s_dir / "session.json").write_text(
+            json.dumps({"session_id": "s1", "title": "On disk"}),
+            encoding="utf-8",
+        )
+        (s_dir / "messages.jsonl").write_text(
+            json.dumps({"role": "user", "content": "restored probe"}) + "\n",
+            encoding="utf-8",
+        )
+        index.index_session("s1", "On disk")
+        index.index_message("s1", "user", "restored probe")
+
+        index.remove_session("s1")
+        assert index.indexed_session_ids() == set()
+
+        assert index.reindex_from_store(store_dir) == 1
+        assert index.indexed_session_ids() == {"s1"}

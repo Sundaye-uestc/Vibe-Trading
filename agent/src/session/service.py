@@ -10,7 +10,7 @@ import concurrent.futures
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
@@ -97,6 +97,39 @@ class SessionService:
         self._inflight_lock = threading.Lock()
         self._search_index = get_shared_index()
         self._recover_interrupted_attempts()
+        self._warn_about_index_only_sessions()
+
+    def _warn_about_index_only_sessions(self) -> None:
+        """Warn when the index lists sessions that no longer exist on disk.
+
+        Session directories are the source of truth for full message bodies;
+        the index only mirrors them. An index row with no directory means the
+        session is still findable by cross-session search but cannot be opened
+        — the silent state a past data loss left behind. Reporting it keeps the
+        next occurrence visible instead of letting it pass unnoticed.
+        """
+        try:
+            indexed = self._search_index.indexed_session_ids()
+        except Exception as exc:  # noqa: BLE001 - a diagnostic must not block startup
+            logger.warning("Session index consistency check skipped: %s", exc)
+            return
+        if not indexed:
+            return
+        on_disk: set[str] = set()
+        if self.store.base_dir.exists():
+            on_disk = {
+                entry.name
+                for entry in self.store.base_dir.iterdir()
+                if entry.is_dir() and (entry / "session.json").is_file()
+            }
+        missing = sorted(indexed - on_disk)
+        if missing:
+            logger.warning(
+                "Search index lists %d session(s) with no directory on disk "
+                "(searchable but unopenable): %s",
+                len(missing),
+                ", ".join(missing),
+            )
 
     def _recover_interrupted_attempts(self) -> None:
         """Finalize attempts that could not outlive the previous process.
@@ -239,7 +272,33 @@ class SessionService:
     def delete_session(self, session_id: str) -> bool:
         """Delete a session."""
         self.event_bus.clear(session_id)
-        return self.store.delete_session(session_id)
+        deleted = self.store.delete_session(session_id)
+        if deleted:
+            # Keep the cross-session index in step with the store: a stale row
+            # leaves the deleted session findable by search forever.
+            self._search_index.remove_session(session_id)
+        return deleted
+
+    def set_session_title(self, session_id: str, title: str) -> Optional[Session]:
+        """Rename a session and refresh its search-index row.
+
+        Args:
+            session_id: Session to rename.
+            title: New title.
+
+        Returns:
+            The updated session, or ``None`` when it does not exist.
+        """
+        session = self.store.get_session(session_id)
+        if session is None:
+            return None
+        session.title = title
+        session.updated_at = datetime.now(timezone.utc).isoformat()
+        self.store.update_session(session)
+        # The index carries the title for search result headings, so without
+        # this a rename is invisible to cross-session search.
+        self._search_index.index_session(session.session_id, title)
+        return session
 
     async def send_message(
         self,
@@ -482,7 +541,7 @@ class SessionService:
         """
         from src.tools import build_registry
         from src.providers.chat import ChatLLM
-        from src.agent.loop import AgentLoop
+        from src.agent.loop import AgentLoop, _default_max_iterations
         from src.memory.persistent import PersistentMemory
         from src.config.loader import load_runtime_agent_config, sanitize_session_overrides
 
@@ -535,7 +594,7 @@ class SessionService:
             registry=registry,
             llm=llm,
             event_callback=event_callback,
-            max_iterations=50,
+            max_iterations=_default_max_iterations(),
             persistent_memory=pm,
         )
         self._active_loops[session_id] = agent

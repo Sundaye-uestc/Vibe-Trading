@@ -191,6 +191,41 @@ class SessionSearchIndex:
         )
         conn.commit()
 
+    def remove_session(self, session_id: str) -> int:
+        """Drop a session and all of its messages from the index.
+
+        Called when a session is deleted through the API. Without this the
+        index keeps the deleted session's rows, so it stays reachable through
+        cross-session search even though its directory is gone.
+
+        The FTS table needs no explicit delete: ``messages_ad`` is an
+        AFTER DELETE trigger on ``messages`` and keeps it in sync.
+
+        Args:
+            session_id: Session ID to remove.
+
+        Returns:
+            Number of message rows deleted.
+        """
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "DELETE FROM messages WHERE session_id = ?", (session_id,)
+        )
+        removed = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        conn.commit()
+        return removed
+
+    def indexed_session_ids(self) -> set[str]:
+        """Return every session id the index knows about.
+
+        Used by the startup consistency check, which compares this set against
+        the directories actually present on disk.
+        """
+        conn = self._get_conn()
+        rows = conn.execute("SELECT id FROM sessions").fetchall()
+        return {str(row[0]) for row in rows}
+
     @staticmethod
     def _sanitize_fts_query(query: str) -> str:
         """Sanitize a user query for FTS5 MATCH syntax.

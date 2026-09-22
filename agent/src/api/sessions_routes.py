@@ -657,9 +657,12 @@ def register_sessions_routes(app: FastAPI) -> None:
         if not session:
             raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
         if req.title is not None:
-            session.title = req.title
-        session.updated_at = datetime.now(timezone.utc).isoformat()
-        svc.store.update_session(session)
+            # Rename through the service so the search-index row picks up the
+            # new title; a raw store write left search results stale.
+            svc.set_session_title(session_id, req.title)
+        else:
+            session.updated_at = datetime.now(timezone.utc).isoformat()
+            svc.store.update_session(session)
         return {"status": "updated", "session_id": session_id}
 
     @app.post("/sessions/{session_id}/title/auto", dependencies=[Depends(require_auth)])
@@ -724,9 +727,7 @@ def register_sessions_routes(app: FastAPI) -> None:
         if not title:
             raise HTTPException(status_code=502, detail="empty title from model")
 
-        session.title = title
-        session.updated_at = datetime.now(timezone.utc).isoformat()
-        svc.store.update_session(session)
+        svc.set_session_title(session_id, title)
         return {"status": "updated", "session_id": session_id, "title": title}
 
     @app.post("/sessions/{session_id}/messages", dependencies=[Depends(require_auth)])

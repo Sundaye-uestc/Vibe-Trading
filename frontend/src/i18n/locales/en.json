@@ -56,6 +56,8 @@
     "imageTooLarge": "Image must be under 5MB",
     "invalidImageType": "Please select a valid image file",
     "imageLoadFailed": "Failed to load image, please retry",
+    "imageResizeUnsupported": "This browser cannot resize images, so this one cannot be saved",
+    "imageSaveFailed": "Save failed: local storage is full or unavailable",
     "changeBackground": "Change Background",
     "applyBackground": "Apply Background",
     "removeBackground": "Remove Background",

@@ -44,6 +44,8 @@
     "imageTooLarge": "图片大小不能超过 5MB",
     "invalidImageType": "请选择有效的图片文件",
     "imageLoadFailed": "图片加载失败，请重试",
+    "imageResizeUnsupported": "当前环境不支持图片缩放，无法保存该图片",
+    "imageSaveFailed": "保存失败：本地存储空间不足或被禁用",
     "changeBackground": "更换背景",
     "applyBackground": "应用背景",
     "removeBackground": "移除背景",

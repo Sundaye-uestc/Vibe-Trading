@@ -183,20 +183,21 @@ export function Layout() {
   /* ---- Background ---- */
   const [bg, setBg] = useState<string | null>(getStoredBackground);
 
-  const handleBgSave = (dataUrl: string | null) => {
-    // Update state first so the UI reacts immediately.
-    setBg(dataUrl);
-    // Persist in background; localStorage may fail if the data URL is huge.
-    try {
-      saveBackground(dataUrl);
-    } catch (e) {
-      console.error("Failed to persist background to localStorage", e);
+  const handleBgSave = (dataUrl: string | null): boolean => {
+    // Persist first: the background is rendered from the stored value, so
+    // applying an unstorable one would show it until the next reload and then
+    // silently lose it.
+    if (!saveBackground(dataUrl)) {
+      toast.error(t("layout.imageSaveFailed"));
+      return false;
     }
+    setBg(dataUrl);
     if (dataUrl) {
       toast.success(t("layout.backgroundApplied"));
     } else {
       toast.success(t("layout.backgroundRemoved"));
     }
+    return true;
   };
 
   /* ---- Dialogs ---- */

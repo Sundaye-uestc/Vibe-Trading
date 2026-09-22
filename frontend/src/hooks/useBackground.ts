@@ -1,5 +1,4 @@
 const STORAGE_KEY = "qa-background";
-const MAX_SIZE = 5 * 1024 * 1024; // 5MB
 
 export function getStoredBackground(): string | null {
   try {
@@ -9,12 +8,22 @@ export function getStoredBackground(): string | null {
   }
 }
 
-export function saveBackground(dataUrl: string | null) {
-  if (dataUrl) {
-    localStorage.setItem(STORAGE_KEY, dataUrl);
-  } else {
-    localStorage.removeItem(STORAGE_KEY);
+/** Persist the chat background.
+ *
+ * Returns false when storage refused the write — quota exceeded, or DOM storage
+ * disabled outright. Callers must surface that: the background is rendered from
+ * this same value, so swallowing the failure shows a background that silently
+ * disappears on the next reload.
+ */
+export function saveBackground(dataUrl: string | null): boolean {
+  try {
+    if (dataUrl) {
+      localStorage.setItem(STORAGE_KEY, dataUrl);
+    } else {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
-
-export { MAX_SIZE as BACKGROUND_MAX_SIZE };

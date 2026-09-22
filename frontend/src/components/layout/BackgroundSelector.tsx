@@ -1,64 +1,92 @@
 import { useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Upload, Trash2 } from "lucide-react";
-import { getStoredBackground, BACKGROUND_MAX_SIZE } from "@/hooks/useBackground";
+import { getStoredBackground } from "@/hooks/useBackground";
+import {
+  backgroundResizeTarget,
+  ImageResizeError,
+  resizeImageFileToDataUrl,
+  type ImageResizeErrorCode,
+} from "@/lib/imageResize";
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  onSave: (dataUrl: string | null) => void;
+  /** Returns false when the value could not be persisted. */
+  onSave: (dataUrl: string | null) => boolean;
 }
 
 export function BackgroundSelector({ open, onClose, onSave }: Props) {
   const { t } = useTranslation();
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(getStoredBackground);
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const messageFor = (code: ImageResizeErrorCode): string => {
+    switch (code) {
+      case "too-large":
+        return t("layout.imageTooLarge");
+      case "invalid-type":
+        return t("layout.invalidImageType");
+      case "canvas-unavailable":
+        return t("layout.imageResizeUnsupported");
+      default:
+        return t("layout.imageLoadFailed");
+    }
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setError("");
-
-    if (file.size > BACKGROUND_MAX_SIZE) {
-      setError(t("layout.imageTooLarge"));
-      return;
+    setBusy(true);
+    try {
+      // Shrink before previewing: what the preview shows is exactly what gets
+      // persisted, so a "successful" apply can never turn out to be unstorable.
+      setImageDataUrl(
+        await resizeImageFileToDataUrl(file, {
+          ...backgroundResizeTarget(),
+          quality: 0.85,
+        }),
+      );
+    } catch (err) {
+      setError(
+        err instanceof ImageResizeError
+          ? messageFor(err.code)
+          : t("layout.imageLoadFailed"),
+      );
+    } finally {
+      setBusy(false);
+      // Allow re-picking the same file after a failure.
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
-
-    if (!file.type.startsWith("image/")) {
-      setError(t("layout.invalidImageType"));
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      setImageDataUrl(reader.result as string);
-    };
-    reader.onerror = () => {
-      setError(t("layout.imageLoadFailed"));
-    };
-    reader.readAsDataURL(file);
   };
 
   const handleApply = () => {
-    if (!imageDataUrl) return;
-    try {
-      onSave(imageDataUrl);
-    } catch (e) {
-      console.error("BackgroundSelector: onSave failed", e);
+    if (!imageDataUrl || busy) return;
+    if (!onSave(imageDataUrl)) {
+      // Storage refused the write (quota, or DOM storage disabled). Keep the
+      // dialog open so the failure is visible instead of a background that
+      // vanishes on the next reload.
+      setError(t("layout.imageSaveFailed"));
+      return;
     }
     onClose();
   };
 
   const handleRemove = () => {
     setImageDataUrl(null);
-    onSave(null);
+    if (!onSave(null)) {
+      setError(t("layout.imageSaveFailed"));
+      return;
+    }
     onClose();
   };
 
   if (!open) return null;
 
-  const hasExisting = !!(getStoredBackground() || imageDataUrl);
+  const hasExisting = !!imageDataUrl;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -86,7 +114,8 @@ export function BackgroundSelector({ open, onClose, onSave }: Props) {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="w-full flex items-center justify-center gap-2 rounded-lg border-2 border-dashed border-muted-foreground/30 px-4 py-6 text-sm text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors"
+            disabled={busy}
+            className="w-full flex items-center justify-center gap-2 rounded-lg border-2 border-dashed border-muted-foreground/30 px-4 py-6 text-sm text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors disabled:opacity-50"
           >
             <Upload className="h-4 w-4" />
             {imageDataUrl ? t("layout.changeImage") : t("layout.chooseImage")}
@@ -108,7 +137,7 @@ export function BackgroundSelector({ open, onClose, onSave }: Props) {
           <button
             type="button"
             onClick={handleApply}
-            disabled={!imageDataUrl}
+            disabled={!imageDataUrl || busy}
             className="flex-1 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
           >
             {t("layout.applyBackground")}

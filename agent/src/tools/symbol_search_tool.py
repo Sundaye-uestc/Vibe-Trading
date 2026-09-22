@@ -1,6 +1,6 @@
 """Read-only symbol-search tool: resolve a name/ticker to symbols + market.
 
-Backed by the selected Binance connector for exact crypto pairs plus three
+Backed by the selected Binance connector for exact crypto pairs plus four
 frozen, IP-throttled public-API clients so the agent never hits a provider
 un-throttled and never re-implements transport plumbing:
 
@@ -11,6 +11,9 @@ un-throttled and never re-implements transport plumbing:
   matches Chinese/English names and tickers across A-shares (.SH/.SZ/.BJ),
   Hong Kong (.HK) and U.S. (.US) listings, each carrying a fully-qualified
   ``secid`` already in ``<market>.<code>`` form.
+* Tencent's smart-box endpoint — the only surface that still resolves a
+  *Chinese* instrument name now that Eastmoney's suggest endpoint answers
+  every query with the same fixed candidate-less body.
 * :mod:`backtest.loaders.yahoo_client` — Yahoo's v1 search endpoint matches
   global tickers/company names (US, HK, Canada, crypto, indices, FX, ...).
 * :mod:`backtest.loaders.sec_edgar_client` — the SEC company-tickers table
@@ -30,6 +33,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from backtest.loaders import eastmoney_client, sec_edgar_client, yahoo_client
+from backtest.loaders._http import resolve_min_interval, throttled_get
 from src.agent.tools import BaseTool
 from src.market_data import FIAT_CODES, canonical_fx_pair
 
@@ -44,6 +48,26 @@ logger = logging.getLogger(__name__)
 # ready-made ``QuoteID`` secid. Requests route through the frozen, throttled
 # Eastmoney client; this is just the documented endpoint URL + query shape.
 _EASTMONEY_SUGGEST_URL = "https://searchapi.eastmoney.com/api/suggest/get"
+
+# Tencent's free smart-box endpoint (the autocomplete the quote app itself
+# calls) is the one surface that still resolves *Chinese* instrument names now
+# that Eastmoney's suggest endpoint answers every query with the same fixed
+# candidate-less body. The body is GBK and looks like
+# ``v_hint="sh~600522~中天科技~ztkj~GP-A^hk~00700~腾讯控股~txkg~GP";`` —
+# ``^``-separated rows of ``market~code~name~pinyin~tag``.
+_TENCENT_SMARTBOX_URL = "https://smartbox.gtimg.cn/s3/"
+_TENCENT_SMARTBOX_HOST_KEY = "tencent"
+_TENCENT_SMARTBOX_MIN_INTERVAL_ENV = "VIBE_TRADING_TENCENT_SMARTBOX_MIN_INTERVAL"
+_TENCENT_SMARTBOX_DEFAULT_MIN_INTERVAL = 0.6
+
+# smartbox market prefix -> our symbol suffix. Rows on any other prefix are
+# skipped rather than emitted with a wrong suffix.
+_TENCENT_SUFFIX_BY_MARKET: Dict[str, str] = {
+    "sh": "SH",
+    "sz": "SZ",
+    "hk": "HK",
+    "us": "US",
+}
 
 # Canadian equity suffixes (TSX ``.TO`` / TSX Venture ``.V``). Eastmoney has NO
 # Canada coverage: querying it with a Canadian ticker returns a non-JSON body
@@ -257,6 +281,9 @@ class SymbolSearchTool(BaseTool):
 
         em_hits, sources["eastmoney"] = _search_eastmoney(query)
         candidates.extend(em_hits)
+
+        tc_hits, sources["tencent"] = _search_tencent(query)
+        candidates.extend(tc_hits)
 
         # An explicit FX pair searches Yahoo by its canonical ``XXXYYY=X``
         # spelling — exact-symbol search is far more reliable than free text —
@@ -700,6 +727,118 @@ def _format_symbol(code: str, suffix: str) -> Optional[str]:
     if suffix == "HK":
         return f"{code.zfill(5)}.HK"
     return f"{code}.{suffix}"
+
+
+def _search_tencent(query: str) -> tuple[List[Dict[str, Any]], str]:
+    """Query Tencent's smart-box endpoint and normalize the candidates.
+
+    This is the one source that still resolves a *Chinese* instrument name:
+    Eastmoney's suggest endpoint answers every query with the same fixed
+    candidate-less body, and Yahoo's CJK matching is weak. Without a source
+    that can answer an A-share name, the grounding ledger records "does not
+    exist" and the run's identity never locks — the model then re-issues the
+    same search across several iterations while every data tool stays blocked.
+
+    Args:
+        query: Free-text name or ticker fragment.
+
+    Returns:
+        ``(candidates, status)`` where ``status`` is ``"ok"`` on success or a
+        short error string when the source failed (candidates is then empty).
+    """
+    if _canonical_crypto_pair(query) is not None:
+        return [], f"{_SKIPPED}tencent smartbox has no crypto exchange-pair coverage"
+    # smartbox answers a suffixed query ("600522.SH") with no match; it wants
+    # the bare code or a name. Stripping a trailing venue tag also turns
+    # "BRK.B" into "BRK", which still resolves.
+    term = re.sub(r"\.[A-Za-z]{1,4}$", "", query.strip())
+    if not term:
+        return [], f"{_SKIPPED}tencent smartbox needs a non-empty query"
+    try:
+        response = throttled_get(
+            _TENCENT_SMARTBOX_URL,
+            host_key=_TENCENT_SMARTBOX_HOST_KEY,
+            min_interval=resolve_min_interval(
+                _TENCENT_SMARTBOX_MIN_INTERVAL_ENV,
+                _TENCENT_SMARTBOX_DEFAULT_MIN_INTERVAL,
+            ),
+            params={"q": term, "t": "all"},
+        )
+        response.raise_for_status()
+    except Exception as exc:  # noqa: BLE001 - one source failing is non-fatal
+        # Debug-level like the sibling sources: the status string still flows
+        # into the tool result's ``sources`` map, so nothing is hidden.
+        logger.debug("tencent smartbox failed for %r: %s", query, exc)
+        return [], f"tencent search failed: {exc}"
+
+    # Tencent serves GBK, and the payload is a JS assignment rather than JSON.
+    body = response.content.decode("gbk", errors="replace")
+    candidates = [
+        candidate
+        for candidate in (
+            _tencent_candidate(row) for row in _tencent_smartbox_rows(body)
+        )
+        if candidate is not None
+    ]
+    return candidates[:_PER_SOURCE_CAP], "ok"
+
+
+def _tencent_smartbox_rows(body: str) -> List[List[str]]:
+    """Split a smart-box body into its ``market~code~name~pinyin~tag`` rows.
+
+    Args:
+        body: The GBK-decoded response body.
+
+    Returns:
+        The ``~``-split fields of every row, with unusable rows dropped. An
+        empty list means "no match" — Tencent answers that with ``v_hint="N";``.
+    """
+    quoted = body.split('"')
+    payload = quoted[1] if len(quoted) > 1 else body
+    rows: List[List[str]] = []
+    for segment in payload.split("^"):
+        fields = [field.strip() for field in segment.split("~")]
+        if len(fields) < 5 or not fields[1]:
+            continue
+        rows.append(fields)
+    return rows
+
+
+def _tencent_candidate(row: List[str]) -> Optional[Dict[str, Any]]:
+    """Map one smart-box row to a normalized candidate, or ``None``.
+
+    Args:
+        row: The ``market~code~name~pinyin~tag`` fields of one row.
+
+    Returns:
+        A candidate dict, or ``None`` when the row is not an instrument the
+        loaders can serve.
+    """
+    suffix = _TENCENT_SUFFIX_BY_MARKET.get(row[0].lower())
+    if not suffix:
+        return None
+    tag = row[4].upper()
+    # ``GP*`` is a stock (A-share ``GP-A``, US ``GP``) and ``*ETF*`` an
+    # exchange-traded fund. ``ZS`` is an index and ``KJ*`` an OTC fund —
+    # neither is something the loaders can fetch, so emitting them would only
+    # hand the identity ledger a rival candidate it cannot act on.
+    if not (tag.startswith("GP") or "ETF" in tag):
+        return None
+    code = row[1].strip().upper()
+    if suffix == "US" and "." in code:
+        # smartbox carries the US venue as a symbol suffix (``aapl.oq``); the
+        # project's US symbol is venue-agnostic.
+        code = code.rsplit(".", 1)[0]
+    symbol = _format_symbol(code, suffix)
+    if symbol is None:
+        return None
+    return {
+        "symbol": symbol,
+        "name": row[2].strip() or None,
+        "market": _MARKET_BY_SUFFIX.get(suffix, suffix.lower()),
+        "type": row[4].strip() or None,
+        "source": "tencent",
+    }
 
 
 def _search_yahoo(query: str) -> tuple[List[Dict[str, Any]], str]:

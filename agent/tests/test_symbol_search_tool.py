@@ -92,6 +92,32 @@ def _yahoo_quotes() -> list:
     ]
 
 
+class _FakeSmartboxResponse:
+    """Minimal ``requests.Response`` stand-in for the smart-box client."""
+
+    def __init__(self, body: bytes) -> None:
+        self.content = body
+        self.status_code = 200
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _no_live_smartbox(monkeypatch):
+    """Keep the fan-out's Tencent leg off the network unless a test opts in.
+
+    The smart-box source now runs on *every* search, so without a default stub
+    each existing fan-out test would reach a live endpoint — exactly what this
+    module's docstring promises never to do.
+    """
+    monkeypatch.setattr(
+        ss,
+        "throttled_get",
+        lambda *args, **kwargs: _FakeSmartboxResponse(b'v_hint="N";'),
+    )
+
+
 class TestSymbolSearchSuccess:
     """Happy-path fan-out, normalization, merge, and CIK enrichment."""
 
@@ -1042,3 +1068,122 @@ class TestSpotGoldCandidateFilter:
         symbols = [c["symbol"] for c in data["candidates"]]
         assert "BTC-USD" in symbols
         assert "AAPL.US" in symbols
+
+
+class TestTencentSmartboxRows:
+    """The smart-box body is GBK ``^`` rows of ``market~code~name~pinyin~tag``."""
+
+    def test_splits_rows(self):
+        body = 'v_hint="sh~600522~中天科技~ztkj~GP-A^hk~00700~腾讯控股~txkg~GP";'
+        assert ss._tencent_smartbox_rows(body) == [
+            ["sh", "600522", "中天科技", "ztkj", "GP-A"],
+            ["hk", "00700", "腾讯控股", "txkg", "GP"],
+        ]
+
+    def test_no_match_sentinel_yields_no_rows(self):
+        """Tencent answers a miss with ``v_hint="N";``, not an error."""
+        assert ss._tencent_smartbox_rows('v_hint="N";') == []
+
+    def test_body_without_quotes_is_tolerated(self):
+        assert ss._tencent_smartbox_rows("garbage") == []
+
+
+class TestTencentCandidate:
+    def test_a_share_row_maps_to_cn(self):
+        candidate = ss._tencent_candidate(
+            ["sh", "600522", "中天科技", "ztkj", "GP-A"]
+        )
+        assert candidate == {
+            "symbol": "600522.SH",
+            "name": "中天科技",
+            "market": "cn",
+            "type": "GP-A",
+            "source": "tencent",
+        }
+
+    def test_hk_code_is_zero_padded(self):
+        candidate = ss._tencent_candidate(["hk", "700", "腾讯控股", "txkg", "GP"])
+        assert candidate["symbol"] == "00700.HK"
+        assert candidate["market"] == "hk"
+
+    def test_us_row_loses_its_venue_suffix(self):
+        """smartbox ships the US venue on the code (``aapl.oq``), not a column."""
+        candidate = ss._tencent_candidate(["us", "aapl.oq", "苹果", "pg", "GP"])
+        assert candidate["symbol"] == "AAPL.US"
+        assert candidate["market"] == "us"
+
+    def test_exchange_traded_funds_are_kept(self):
+        for tag in ("ETF", "QDII-ETF"):
+            candidate = ss._tencent_candidate(["sh", "510300", "沪深300ETF", "x", tag])
+            assert candidate is not None, tag
+            assert candidate["symbol"] == "510300.SH"
+
+    def test_non_tradable_rows_are_dropped(self):
+        """An index or OTC fund must not become a rival identity candidate."""
+        assert ss._tencent_candidate(["sh", "000905", "中证500", "zz500", "ZS"]) is None
+        assert (
+            ss._tencent_candidate(["jj", "007005", "中金新医药股票C", "x", "KJ"])
+            is None
+        )
+
+    def test_unknown_market_prefix_is_dropped(self):
+        assert ss._tencent_candidate(["xx", "1234", "某物", "x", "GP-A"]) is None
+
+
+class TestTencentInFanOut:
+    """The ledger needs a source that can answer an A-share *name*."""
+
+    def test_chinese_name_resolves_to_an_a_share_candidate(self):
+        body = 'v_hint="sh~600522~中天科技~ztkj~GP-A";'
+        with patch.object(
+            ss.eastmoney_client, "get_json", return_value={}
+        ), patch.object(
+            ss.yahoo_client, "search", return_value=[]
+        ), patch.object(ss.sec_edgar_client, "cik_for"), patch.object(
+            ss,
+            "throttled_get",
+            return_value=_FakeSmartboxResponse(body.encode("gbk")),
+        ) as mock_get:
+            out = ss.SymbolSearchTool().execute(query="中天科技", limit=10)
+
+        assert mock_get.call_args.kwargs["params"]["q"] == "中天科技"
+        payload = json.loads(out)
+        assert payload["ok"] is True
+        assert payload["data"]["sources"]["tencent"] == "ok"
+        by_symbol = {c["symbol"]: c for c in payload["data"]["candidates"]}
+        assert by_symbol["600522.SH"]["name"] == "中天科技"
+        assert by_symbol["600522.SH"]["source"] == "tencent"
+
+    def test_suffixed_query_is_asked_bare(self):
+        """smartbox answers ``600522.SH`` with no match; the tool strips it."""
+        with patch.object(
+            ss.eastmoney_client, "get_json", return_value={}
+        ), patch.object(
+            ss.yahoo_client, "search", return_value=[]
+        ), patch.object(ss.sec_edgar_client, "cik_for"), patch.object(
+            ss, "throttled_get", return_value=_FakeSmartboxResponse(b'v_hint="N";')
+        ) as mock_get:
+            ss.SymbolSearchTool().execute(query="600522.SH", limit=10)
+
+        assert mock_get.call_args.kwargs["params"]["q"] == "600522"
+
+    def test_a_source_failure_is_reported_not_swallowed(self):
+        with patch.object(
+            ss.eastmoney_client, "get_json", return_value={}
+        ), patch.object(
+            ss.yahoo_client, "search", return_value=[]
+        ), patch.object(ss.sec_edgar_client, "cik_for"), patch.object(
+            ss, "throttled_get", side_effect=RuntimeError("offline")
+        ):
+            out = ss.SymbolSearchTool().execute(query="中天科技", limit=10)
+
+        payload = json.loads(out)
+        assert payload["data"]["sources"]["tencent"] == "tencent search failed: offline"
+
+    def test_crypto_pair_skips_the_source_entirely(self):
+        """The skip is reported, not swallowed: a failed source would turn a
+        legitimate "no such pair" into a blocking invalidated identity."""
+        candidates, status = ss._search_tencent("BTC-USDT")
+
+        assert candidates == []
+        assert status.startswith("skipped: ")

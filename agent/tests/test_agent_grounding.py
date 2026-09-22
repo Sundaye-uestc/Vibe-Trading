@@ -2541,6 +2541,17 @@ def test_every_resolver_skip_marker_is_understood_as_a_non_failure(
 
     monkeypatch.setattr(resolver.eastmoney_client, "get_json", lambda *a, **k: {})
     monkeypatch.setattr(resolver.yahoo_client, "search", lambda *a, **k: [])
+    # The Tencent leg is part of the same fan-out, and a live call here would
+    # resolve these queries — this test pins the "source skipped" contract, not
+    # resolution.
+    class _NoMatchResponse:
+        status_code = 200
+        content = b'v_hint="N";'
+
+        def raise_for_status(self) -> None:
+            return None
+
+    monkeypatch.setattr(resolver, "throttled_get", lambda *a, **k: _NoMatchResponse())
 
     result = resolver.SymbolSearchTool().execute(query=query)
     statuses = json.loads(result)["data"]["sources"]

@@ -186,11 +186,20 @@ def test_cleared_result_reopens_the_dedup_gate(monkeypatch, tmp_path: Path) -> N
     _call("call_3", 4)
     trace.close()
 
-    assert len(calls) == 2, (
-        "third call must execute: its only result was cleared from context, so "
-        "'use the previous result' points at [cleared]"
-    )
+    # The third call must hand the model real data again: a second skip would
+    # re-open the #1343 deadlock, and a "[cleared]" pointer is not an answer.
+    # Read-only fetches now replay their identical prior result from the
+    # loop's cache, so the model gets the values back without a second network
+    # round trip -- the fetch itself must not run again.
+    assert len(calls) == 1, "a cached replay must not re-run the fetch"
+    third = json.loads(messages[-1]["content"])
+    assert "rows" in third, third
+    assert not third.get("skipped"), third
     events = TraceWriter.read(run_dir)
     assert any(e["type"] == "microcompact_cleared" for e in events), (
         "the clear must leave a trace event; this layer used to act silently"
     )
+    assert any(
+        e["type"] == "tool_result_cached" and e.get("call_id") == "call_3"
+        for e in events
+    ), "the replayed answer must be traceable to the cache, not to a re-run"

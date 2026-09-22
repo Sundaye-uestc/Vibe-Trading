@@ -164,7 +164,10 @@ def test_agent_loop_never_releases_tool_call_syntax_as_a_final_answer(
     events: list[tuple[str, dict[str, Any]]] = []
     agent = AgentLoop(
         registry=registry,
-        llm=_chat_llm(_ScriptedStreamingLLM([garbage])),
+        # Two garbage samples: the first is answered by the budget-exempt retry
+        # of the forced-text round, so only the second can exhaust the loop's
+        # patience and reach the deterministic fallback below.
+        llm=_chat_llm(_ScriptedStreamingLLM([garbage, garbage])),
         event_callback=lambda event_type, payload: events.append((event_type, payload)),
         max_iterations=1,  # the single iteration is the forced-text last one
         persistent_memory=PersistentMemory(memory_dir=tmp_path / "memory"),
@@ -181,3 +184,33 @@ def test_agent_loop_never_releases_tool_call_syntax_as_a_final_answer(
         event_type == "answer" and "<" in str(payload)
         for event_type, payload in events
     )
+
+
+def test_forced_text_round_is_retried_without_spending_the_budget(
+    tmp_path: Path,
+) -> None:
+    """A markup-only closing round must not cost the run its final answer.
+
+    The forced-text round is the model's only chance to answer without tool
+    calling. When that single sample came back as tool-call markup the run used
+    to end on the "Please ask me to continue" placeholder even though the model
+    would have answered on the next sample. The retry is budget-exempt, so a run
+    with a single iteration still gets a second attempt.
+    """
+    garbage = "<││DSML││tool_calls><││invoke name=\"trading_quote\">"
+    registry = ToolRegistry()
+    agent = AgentLoop(
+        registry=registry,
+        llm=_chat_llm(
+            _ScriptedStreamingLLM([garbage, "recovered plain answer"])
+        ),
+        max_iterations=1,
+        persistent_memory=PersistentMemory(memory_dir=tmp_path / "memory"),
+    )
+    agent.memory.run_dir = str(tmp_path / "run")
+
+    result = agent.run("hello")
+
+    assert result["status"] == "success"
+    assert result["content"] == "recovered plain answer"
+    assert result.get("degraded") is not True

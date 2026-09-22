@@ -47,7 +47,7 @@ from src.providers.content_filter import (
     MAX_CONSECUTIVE_CONTENT_FILTER_SKIPS,
     compute_content_filter_warnings,
 )
-from src.config.accessor import get_env_config
+from src.config.accessor import get_env_config, get_env_value
 from src.config.paths import get_runs_dir, get_sessions_dir
 from src.tools.background_tools import get_background_manager
 from src.config.limits import truncate_tool_result
@@ -56,7 +56,14 @@ from src.tools.redaction import redact_payload, redact_tool_result
 
 RUNS_DIR = get_runs_dir()
 SESSIONS_DIR = get_sessions_dir()
-KEEP_RECENT = 3
+# Override for the layer-1 window. A batch wider than the window is guaranteed to
+# lose results it just fetched, and the marker left behind invites the model to
+# re-issue the same call. The default is sized to hold one typical wide batch
+# (read-only tools run up to 8-way concurrently, and a research step routinely
+# issues ~10 calls), so a step's own results survive to be analysed; lower it
+# only to buy context space back at the cost of more re-fetching.
+KEEP_RECENT_ENV = "VIBE_TRADING_KEEP_RECENT_TOOL_RESULTS"
+KEEP_RECENT = 12
 LLM_USAGE_ARTIFACT = "llm_usage.json"
 
 COLLAPSE_PRESERVE_RECENT = 6
@@ -69,6 +76,52 @@ COLLAPSE_TAIL = 500
 # which is not a constant — it embeds the original payload length, so it is
 # built by ``_cleared_text`` and matched by ``_is_cleared``.
 _STUB_RESULT_CONTENT = "[Result from earlier context — see summary above]"
+
+
+def _keep_recent() -> int:
+    """Return how many recent tool results layer-1 compression keeps readable.
+
+    Returns:
+        The configured window, or :data:`KEEP_RECENT` when it is unset or
+        invalid. A non-positive value is rejected rather than honoured: a window
+        of zero would clear every result the moment it arrived.
+    """
+    raw = get_env_value(KEEP_RECENT_ENV, "").strip()
+    if not raw:
+        return KEEP_RECENT
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return KEEP_RECENT
+    return value if value > 0 else KEEP_RECENT
+
+
+# ReAct iteration ceiling. A long research run needs headroom to finish: the
+# budget is spent gathering evidence, and a run that burns its last rounds
+# re-fetching data has none left to compose the answer. Raise it for deeper
+# research; lower it to cap cost.
+MAX_ITERATIONS_ENV = "VIBE_TRADING_MAX_ITERATIONS"
+DEFAULT_MAX_ITERATIONS = 80
+
+
+def _default_max_iterations() -> int:
+    """Return the configured ReAct iteration ceiling.
+
+    Returns:
+        ``VIBE_TRADING_MAX_ITERATIONS`` when it parses to a positive integer,
+        else :data:`DEFAULT_MAX_ITERATIONS`. A non-positive value is rejected
+        rather than honoured: a ceiling of zero would end every run before the
+        model could answer.
+    """
+    raw = get_env_value(MAX_ITERATIONS_ENV, "").strip()
+    if not raw:
+        return DEFAULT_MAX_ITERATIONS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_ITERATIONS
+    return value if value > 0 else DEFAULT_MAX_ITERATIONS
+
 
 TAIL_TOKEN_BUDGET = 20_000
 SUMMARY_CHUNK_CHARS = 80_000
@@ -465,8 +518,9 @@ def _cleared_text(original_len: int) -> str:
     return (
         f"{_CLEARED_PREFIX} this tool call SUCCEEDED and returned "
         f"{original_len} characters, which were removed to free context "
-        "space. This is NOT a tool failure and NOT an empty result. If you "
-        "need these values, call the tool again with the same arguments.]"
+        "space. This is NOT a tool failure and NOT an empty result. The data "
+        "was already retrieved once, so prefer analysing what you still have "
+        "rather than re-issuing this call.]"
     )
 
 
@@ -487,10 +541,11 @@ def _microcompact(messages: list) -> list:
         exact successful call identity, not by these tool names.
     """
     tool_msgs = [m for m in messages if m.get("role") == "tool"]
-    if len(tool_msgs) <= KEEP_RECENT:
+    keep_recent = _keep_recent()
+    if len(tool_msgs) <= keep_recent:
         return []
     newly_cleared = []
-    for msg in tool_msgs[:-KEEP_RECENT]:
+    for msg in tool_msgs[:-keep_recent]:
         content = msg.get("content", "")
         # Skip a result already cleared: the marker is itself >100 chars, so
         # re-clearing it would rewrite the recorded original size with the
@@ -1044,7 +1099,7 @@ class AgentLoop:
         llm: ChatLLM,
         memory: Optional[WorkspaceMemory] = None,
         event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
-        max_iterations: int = 50,
+        max_iterations: Optional[int] = None,
         persistent_memory: Optional[Any] = None,
     ) -> None:
         """Initialize AgentLoop.
@@ -1054,7 +1109,9 @@ class AgentLoop:
             llm: ChatLLM client.
             memory: Workspace memory (created fresh if not provided).
             event_callback: Event callback (event_type, data).
-            max_iterations: Maximum number of loop iterations.
+            max_iterations: Maximum number of loop iterations. ``None`` (the
+                default) defers to ``VIBE_TRADING_MAX_ITERATIONS`` and finally
+                to :data:`DEFAULT_MAX_ITERATIONS`.
             persistent_memory: PersistentMemory for cross-session recall.
         """
         self.registry = registry
@@ -1075,7 +1132,9 @@ class AgentLoop:
         self._llm_runtime = runtime_snapshot
         self.memory = memory or WorkspaceMemory()
         self._event_callback = event_callback
-        self.max_iterations = max_iterations
+        self.max_iterations = (
+            max_iterations if max_iterations is not None else _default_max_iterations()
+        )
         # Dedup identity is (tool name, canonical arguments) -- NOT the name
         # alone. Keying on the name blocked every legitimate second call to a
         # paginated or parameterised tool: get_financial_statements(
@@ -1110,6 +1169,10 @@ class AgentLoop:
         # 5-9x each (2026-08-20 INTC run) because it could no longer see its
         # own verification records.
         self._called_identical: dict[tuple[str, str], str] = {}
+        # When each cached result was stored, so a read-only data fetch's
+        # window (BaseTool.cache_ttl) can expire. Deterministic entries ignore
+        # it and stay cacheable for the whole run, exactly as before.
+        self._identical_cached_at: dict[tuple[str, str], float] = {}
         self._tool_progress = ToolProgress()
 
     def cancel(self) -> None:
@@ -1206,6 +1269,7 @@ class AgentLoop:
         self._last_activity_wall = _time.time()
         self._run_done = threading.Event()
         self._called_identical = {}
+        self._identical_cached_at = {}
         self._tool_progress = ToolProgress()
         run_started_wall = _time.time()
 
@@ -1277,6 +1341,13 @@ class AgentLoop:
         goal_continuations = 0
         goal_last_progress: tuple[int, int] | None = None
         wrap_up_at = max(1, int(self.max_iterations * 0.8))
+
+        # One extra attempt at the forced-text closing round, granted only when
+        # that round comes back as tool-call markup instead of prose. It does
+        # not draw on ``max_iterations`` (the counter is rewound, not raised),
+        # so a run can never end on the deterministic placeholder simply
+        # because its very last sample happened to be markup.
+        text_only_retry_budget = 1
 
         # Zombie-run watchdog: fail a run that makes no forward progress
         # (no LLM completion, no tool result) for the stall timeout instead
@@ -1650,6 +1721,21 @@ class AgentLoop:
                         )
                         final_content = ""
                         if iteration < self.max_iterations:
+                            continue
+                        if text_only_retry_budget > 0:
+                            # The forced-text round is the model's last chance to
+                            # answer, and it just spent it on markup. Rewind the
+                            # counter so the loop re-enters the same forced-text
+                            # iteration with a fresh sample; the budget itself is
+                            # untouched, so this costs no tool-calling round.
+                            text_only_retry_budget -= 1
+                            iteration -= 1
+                            trace.write(
+                                {
+                                    "type": "forced_text_only_retry",
+                                    "iter": current_iter,
+                                }
+                            )
                             continue
                         # No budget left: never leak the raw markup. The
                         # grounding safe-fallback talks about instrument identity,
@@ -2177,15 +2263,23 @@ class AgentLoop:
                     continue
 
             # Deterministic tools (e.g. financial_rigor calc) return the same
-            # result for the same args. Checked AFTER authorization above so a
-            # cached repeat can never bypass the identity gate. After auto-compact cleared earlier
+            # result for the same args; a read-only data fetch declares a window
+            # instead. Checked AFTER authorization above so a cached repeat can
+            # never bypass the identity gate. After auto-compact cleared earlier
             # tool outputs, the model used to re-run identical expressions
             # 5-9x each (2026-08-20 INTC run) to re-verify numbers it could
             # no longer see. Serve an identical prior call from cache instead.
-            if tool_def is not None and getattr(tool_def, "deterministic", False):
+            cache_ttl = self._identical_cache_ttl(tool_def)
+            if cache_ttl > 0:
                 cache_key = self._identical_call_key(tc.name, tc.arguments)
+                cached: str | None = None
                 if cache_key is not None and cache_key in self._called_identical:
-                    cached = self._called_identical[cache_key]
+                    stored_at = self._identical_cached_at.get(cache_key, 0.0)
+                    if cache_ttl == float("inf") or (
+                        _time.time() - stored_at
+                    ) <= cache_ttl:
+                        cached = self._called_identical[cache_key]
+                if cached is not None:
                     messages.append(context.format_tool_result(tc.id, tc.name, cached))
                     self._successful_call_keys[tc.id] = cache_key
                     self._called_ok.add(cache_key)
@@ -2760,6 +2854,28 @@ class AgentLoop:
         self._called_ok.difference_update(reopened)
         return sorted({key[0] for key in reopened})
 
+    @staticmethod
+    def _identical_cache_ttl(tool_def: Any) -> float:
+        """Return how long an identical call to ``tool_def`` stays cacheable.
+
+        Args:
+            tool_def: The registered tool, or None when the name is unknown.
+
+        Returns:
+            ``inf`` for a deterministic tool (pure, so its answer cannot change
+            within a run), the declared ``cache_ttl`` for a read-only data fetch
+            that opted in, and 0.0 when the tool is not cacheable at all.
+        """
+        if tool_def is None:
+            return 0.0
+        try:
+            ttl = float(getattr(tool_def, "cache_ttl", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            ttl = 0.0
+        if ttl > 0:
+            return ttl
+        return float("inf") if getattr(tool_def, "deterministic", False) else 0.0
+
     def _identical_call_key(self, tool_name: str, arguments: Mapping[str, Any]) -> tuple[str, str] | None:
         """Build a stable key identifying a deterministic tool invocation.
 
@@ -2850,18 +2966,20 @@ class AgentLoop:
                     }
                 )
 
-        # Cache successful deterministic results so an identical later call is
+        # Cache successful cacheable results so an identical later call is
         # served without re-execution (regression: repeated financial_rigor
-        # calcs after compaction, 2026-08-20 INTC run).
+        # calcs after compaction, 2026-08-20 INTC run; and repeated identical
+        # data fetches, 2026-09-21 600127 run).
         if success:
             try:
                 tool_def = self.registry.get(tc.name)
             except Exception:  # noqa: BLE001
                 tool_def = None
-            if tool_def is not None and getattr(tool_def, "deterministic", False):
+            if self._identical_cache_ttl(tool_def) > 0:
                 cache_key = self._identical_call_key(tc.name, tc.arguments)
                 if cache_key is not None:
                     self._called_identical[cache_key] = result
+                    self._identical_cached_at[cache_key] = _time.time()
 
         status = "ok" if success else "error"
         truncated = truncate_tool_result(result)

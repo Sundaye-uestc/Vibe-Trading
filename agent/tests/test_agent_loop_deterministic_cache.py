@@ -33,6 +33,7 @@ class _CountingTool(BaseTool):
 
     def __init__(self, *, deterministic: bool, status: str = "ok") -> None:
         self.deterministic = deterministic
+        self.cache_ttl = 0.0
         self._status = status
         self.calls: list[dict] = []
 
@@ -164,6 +165,50 @@ def test_non_deterministic_tool_is_never_cached(agent_factory) -> None:
     assert len(tool.calls) == 2
     assert len(messages) == 2
     assert not any(r["type"] == "tool_result_cached" for r in records)
+
+
+def test_readonly_fetch_within_its_window_is_served_from_cache(
+    agent_factory,
+) -> None:
+    """A read-only fetch opts in with a window, not with purity.
+
+    Layer-1 compression deletes older tool results and tells the model it may
+    re-fetch with the same arguments. Without a window that invitation cost a
+    fresh network round trip behind a 1s host throttle every time: one 600127
+    run issued tencent_quote 5x and get_stock_news 4x identically.
+    """
+    tool = _CountingTool(deterministic=False)
+    tool.cache_ttl = 300.0
+    agent, run_dir, _ = agent_factory(tool)
+
+    messages, records = _drive(agent, tool.name, run_dir, [{"a": 1}, {"a": 1}])
+
+    assert len(tool.calls) == 1
+    # The second call still gets an answer rather than a skip marker.
+    assert len(messages) == 2
+    assert json.loads(messages[0]["content"]) == json.loads(messages[1]["content"])
+    assert [r["type"] for r in records].count("tool_result_cached") == 1
+
+
+def test_readonly_fetch_re_executes_once_its_window_expires(
+    agent_factory,
+) -> None:
+    """A stale entry must not outlive the window that justified it."""
+    import time as _time
+
+    tool = _CountingTool(deterministic=False)
+    tool.cache_ttl = 30.0
+    agent, run_dir, _ = agent_factory(tool)
+
+    messages, _ = _drive(agent, tool.name, run_dir, [{"a": 1}])
+    assert len(tool.calls) == 1
+
+    # Backdate the stored result past its window instead of sleeping.
+    for key in list(agent._identical_cached_at):
+        agent._identical_cached_at[key] = _time.time() - 3600.0
+
+    _drive(agent, tool.name, run_dir, [{"a": 1}])
+    assert len(tool.calls) == 2
 
 
 def test_failed_deterministic_call_is_not_cached(agent_factory) -> None:

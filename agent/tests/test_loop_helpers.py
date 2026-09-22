@@ -6,8 +6,13 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from src.agent.loop import (
     KEEP_RECENT,
+    KEEP_RECENT_ENV,
+    DEFAULT_MAX_ITERATIONS,
+    MAX_ITERATIONS_ENV,
     COLLAPSE_PRESERVE_RECENT,
     COLLAPSE_TEXT_MIN,
     MICROCOMPACT_THRESHOLD,
@@ -165,6 +170,16 @@ class TestMicrocompactThresholdGate:
 class TestMicrocompactDedupLedger:
     """#1343: a cleared result cannot back "use the previous result", so the
     tools it came from must leave the dedup ledger and become callable again."""
+
+    @pytest.fixture(autouse=True)
+    def _pin_window(self, monkeypatch) -> None:
+        """Pin the layer-1 window so these cases do not track its default.
+
+        The behaviour under test is the dedup-ledger unblocking, which requires
+        an old result to be pruned at all — pinning the window keeps that
+        independent of whatever default the loop ships with.
+        """
+        monkeypatch.setenv(KEEP_RECENT_ENV, "3")
 
     @staticmethod
     def _tool(name: str, content: str) -> dict:
@@ -850,3 +865,103 @@ class TestMicrocompactMarkerIsStable:
             "a tool already reported unreadable must not be re-reported, or the "
             "ledger is re-opened and traced on every later iteration"
         )
+
+
+class TestKeepRecentWindow:
+    """The layer-1 window decides how much of a batch survives its own batch."""
+
+    def test_defaults_to_the_built_in_window(self, monkeypatch) -> None:
+        from src.agent.loop import KEEP_RECENT_ENV, _keep_recent
+
+        monkeypatch.delenv(KEEP_RECENT_ENV, raising=False)
+
+        assert _keep_recent() == KEEP_RECENT
+
+    def test_reads_the_override(self, monkeypatch) -> None:
+        from src.agent.loop import KEEP_RECENT_ENV, _keep_recent
+
+        monkeypatch.setenv(KEEP_RECENT_ENV, "12")
+
+        assert _keep_recent() == 12
+
+    def test_rejects_values_that_would_clear_everything(self, monkeypatch) -> None:
+        """Zero would clear each result the moment it arrived."""
+        from src.agent.loop import KEEP_RECENT_ENV, _keep_recent
+
+        for bad in ("0", "-4", "wide", ""):
+            monkeypatch.setenv(KEEP_RECENT_ENV, bad)
+            assert _keep_recent() == KEEP_RECENT, bad
+
+    def test_wider_window_keeps_a_whole_batch_readable(self, monkeypatch) -> None:
+        """A 6-result batch is intact at a window of 6 and pruned at a window of 3.
+
+        Both windows are set explicitly: the point is the window's effect on a
+        batch, not the shipped default, which must stay free to change.
+        """
+        from src.agent.loop import KEEP_RECENT_ENV
+
+        def build() -> list:
+            return [
+                {"role": "tool", "name": f"tool_{i}", "content": "x" * 500}
+                for i in range(6)
+            ]
+
+        monkeypatch.setenv(KEEP_RECENT_ENV, "6")
+        kept = build()
+        assert _microcompact(kept) == []
+        assert all(not str(m["content"]).startswith("[CLEARED") for m in kept)
+
+        monkeypatch.setenv(KEEP_RECENT_ENV, "3")
+        pruned = build()
+        assert _microcompact(pruned) == ["tool_0", "tool_1", "tool_2"]
+
+
+class TestMaxIterationsCeiling:
+    """The ReAct ceiling is configurable, and defaults to the shipped value."""
+
+    def test_defaults_to_the_built_in_ceiling(self, monkeypatch) -> None:
+        from src.agent.loop import _default_max_iterations
+
+        monkeypatch.delenv(MAX_ITERATIONS_ENV, raising=False)
+
+        assert _default_max_iterations() == DEFAULT_MAX_ITERATIONS
+
+    def test_reads_the_override(self, monkeypatch) -> None:
+        from src.agent.loop import _default_max_iterations
+
+        monkeypatch.setenv(MAX_ITERATIONS_ENV, "120")
+
+        assert _default_max_iterations() == 120
+
+    def test_rejects_values_that_would_end_the_run(self, monkeypatch) -> None:
+        """Zero would end every run before the model could answer."""
+        from src.agent.loop import _default_max_iterations
+
+        for bad in ("0", "-3", "many", ""):
+            monkeypatch.setenv(MAX_ITERATIONS_ENV, bad)
+            assert _default_max_iterations() == DEFAULT_MAX_ITERATIONS, bad
+
+    def test_agent_loop_defers_to_the_configured_ceiling(self, monkeypatch) -> None:
+        """A caller that passes nothing gets the configured ceiling, not 50."""
+        from types import SimpleNamespace
+
+        from src.agent.loop import AgentLoop
+        from src.agent.tools import ToolRegistry
+
+        monkeypatch.setenv(MAX_ITERATIONS_ENV, "77")
+        agent = AgentLoop(registry=ToolRegistry(), llm=SimpleNamespace())
+
+        assert agent.max_iterations == 77
+
+    def test_explicit_max_iterations_wins_over_the_environment(self, monkeypatch) -> None:
+        from types import SimpleNamespace
+
+        from src.agent.loop import AgentLoop
+        from src.agent.tools import ToolRegistry
+
+        monkeypatch.setenv(MAX_ITERATIONS_ENV, "77")
+        agent = AgentLoop(
+            registry=ToolRegistry(), llm=SimpleNamespace(), max_iterations=5
+        )
+
+        assert agent.max_iterations == 5

@@ -82,14 +82,117 @@ class TestResolveSecidUS:
 
     def test_no_us_candidate_returns_none(self):
         payload = {"QuotationCodeTable": {"Data": [{"QuoteID": "1.600519"}]}}
-        with patch.object(ec, "throttled_get_json", return_value=payload):
+        with patch.object(ec, "throttled_get_json", return_value=payload), patch.object(
+            ec, "_resolve_us_market_via_nasdaq", return_value=None
+        ), patch.object(ec, "_resolve_us_market_via_tencent", return_value=None):
             assert ec.resolve_secid("NOPE.US") is None
 
     def test_search_failure_returns_none_without_raising(self):
         with patch.object(
             ec, "throttled_get_json", side_effect=RuntimeError("banned")
-        ):
+        ), patch.object(
+            ec, "_resolve_us_market_via_nasdaq", return_value=None
+        ), patch.object(ec, "_resolve_us_market_via_tencent", return_value=None):
             assert ec.resolve_secid("AAPL.US") is None
+
+
+class TestUsMarketLabels:
+    """Pure parsers that turn a venue label into an Eastmoney market prefix."""
+
+    def test_nasdaq_tiers_all_map_to_105(self):
+        for label in ("NASDAQ", "NASDAQ-GS", "NASDAQ-GM", "NASDAQ-CM"):
+            assert ec._us_market_from_nasdaq_label(label) == "105", label
+
+    def test_nyse_and_amex_map_to_106_and_107(self):
+        assert ec._us_market_from_nasdaq_label("NYSE") == "106"
+        assert ec._us_market_from_nasdaq_label("AMEX") == "107"
+
+    def test_nyse_american_is_amex_not_nyse(self):
+        """The AMEX arm must win: a prefix match on NYSE would give 106."""
+        assert ec._us_market_from_nasdaq_label("NYSE American") == "107"
+
+    def test_label_matching_is_case_and_space_insensitive(self):
+        assert ec._us_market_from_nasdaq_label("  nasdaq-gs ") == "105"
+
+    def test_unplaceable_labels_return_none(self):
+        for label in ("PNK", "OTC", "BATS", "", None, 7):
+            assert ec._us_market_from_nasdaq_label(label) is None, label
+
+    def test_tencent_suffixes_map_to_their_venue(self):
+        cases = {".OQ": "105", ".N": "106", ".A": "107"}
+        for suffix, market in cases.items():
+            body = f'v_usAAPL="200~苹果~AAPL{suffix}~338.98~336.13";'
+            assert ec._us_market_from_tencent_body(body) == market, suffix
+
+    def test_tencent_unparseable_bodies_return_none(self):
+        for body in ("", "not a quote", 'v_usAAPL="200~only-two";', 'v_usAAPL="200~x~AAPL~1";'):
+            assert ec._us_market_from_tencent_body(body) is None, body
+
+
+class TestResolveSecidUSFallback:
+    """When suggest answers without a candidate, Nasdaq/Tencent place the ticker.
+
+    The suggest endpoint is the surface that used to answer this, and it now
+    returns the same candidate-less body for every query.
+    """
+
+    #: The fixed candidate-less body the suggest endpoint serves for every query.
+    _DEAD_SUGGEST_BODY = {"passportWeb": {"uid": "0"}}
+
+    def test_nasdaq_places_the_ticker_and_tencent_is_not_consulted(self):
+        with patch.object(
+            ec, "throttled_get_json", return_value=self._DEAD_SUGGEST_BODY
+        ), patch.object(
+            ec, "_resolve_us_market_via_nasdaq", return_value="105.AAPL"
+        ), patch.object(ec, "_resolve_us_market_via_tencent") as tencent:
+            assert ec.resolve_secid("AAPL.US") == "105.AAPL"
+
+        tencent.assert_not_called()
+
+    def test_tencent_places_the_ticker_when_nasdaq_cannot(self):
+        with patch.object(
+            ec, "throttled_get_json", return_value=self._DEAD_SUGGEST_BODY
+        ), patch.object(
+            ec, "_resolve_us_market_via_nasdaq", return_value=None
+        ), patch.object(
+            ec, "_resolve_us_market_via_tencent", return_value="106.BRK"
+        ):
+            assert ec.resolve_secid("BRK.US") == "106.BRK"
+
+    def test_both_sources_failing_returns_none_without_raising(self):
+        with patch.object(
+            ec, "throttled_get_json", return_value=self._DEAD_SUGGEST_BODY
+        ), patch.object(
+            ec, "_resolve_us_market_via_nasdaq", return_value=None
+        ), patch.object(ec, "_resolve_us_market_via_tencent", return_value=None):
+            assert ec.resolve_secid("XYZ.US") is None
+
+    def test_a_working_suggest_endpoint_skips_the_fallbacks(self):
+        payload = {"QuotationCodeTable": {"Data": [{"QuoteID": "105.AAPL"}]}}
+        with patch.object(ec, "throttled_get_json", return_value=payload), patch.object(
+            ec, "_resolve_us_market_via_nasdaq"
+        ) as nasdaq, patch.object(ec, "_resolve_us_market_via_tencent") as tencent:
+            assert ec.resolve_secid("AAPL.US") == "105.AAPL"
+
+        nasdaq.assert_not_called()
+        tencent.assert_not_called()
+
+    def test_miss_is_cached_only_until_ttl_expires(self):
+        """A miss must not be pinned forever — a recovered endpoint re-resolves."""
+        payload = {"QuotationCodeTable": {"Data": [{"QuoteID": "105.AAPL"}]}}
+        with patch.object(
+            ec, "throttled_get_json", return_value=self._DEAD_SUGGEST_BODY
+        ) as mock_dead, patch.object(
+            ec, "_resolve_us_market_via_nasdaq", return_value=None
+        ), patch.object(ec, "_resolve_us_market_via_tencent", return_value=None):
+            assert ec.resolve_secid("AAPL.US") is None
+            assert ec.resolve_secid("AAPL.US") is None
+        assert mock_dead.call_count == 1  # second call served from the miss entry
+
+        # Age the recorded miss past its TTL; the endpoint is healthy again.
+        ec._US_SECID_CACHE["AAPL"] = (None, 0.0)
+        with patch.object(ec, "throttled_get_json", return_value=payload):
+            assert ec.resolve_secid("AAPL.US") == "105.AAPL"
 
 
 class TestFetchKline:

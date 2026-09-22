@@ -155,6 +155,7 @@ class DragonTigerTool(BaseTool):
     """Query the Eastmoney A-share dragon-tiger (龙虎榜) disclosure board."""
 
     name = "get_dragon_tiger"
+    cache_ttl = 300.0  # read-only fetch; identical args are stable within a run
     description = (
         "Fetch the A-share dragon-tiger board (龙虎榜) for a given trade date from "
         "Eastmoney's free datacenter API. Markets: China A-share (SH/SZ). Omit "

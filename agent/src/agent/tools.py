@@ -29,6 +29,18 @@ class BaseTool(ABC):
     # same result, so the loop may serve repeated identical calls from cache
     # instead of re-executing them (financial_rigor calc/verify, etc.).
     deterministic: bool = False
+    # Seconds an identical successful call may be answered from that same cache.
+    # ``deterministic`` covers pure computation; a read-only data fetch is not
+    # pure -- a quote or a filing list genuinely can change -- but it is stable
+    # over one run, so it opts in with a window rather than caching for the
+    # whole run. 0 leaves the tool uncached, which is the default.
+    #
+    # This exists because layer-1 context compression deletes older tool results
+    # and tells the model it may re-fetch with the same arguments. Without a
+    # window, every re-fetch is a fresh network round trip behind a 1s host
+    # throttle: one 600127 run issued tencent_quote 5x, get_stock_news 4x and
+    # get_market_data 18x with byte-identical arguments.
+    cache_ttl: float = 0.0
 
     @classmethod
     def check_available(cls) -> bool:

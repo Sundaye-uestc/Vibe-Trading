@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from backtest.loaders import eastmoney_client, yahoo_client
+from src.tools import stock_news_tool
 from src.tools.stock_news_tool import (
     StockNewsTool,
     _bare_query,
@@ -223,15 +224,56 @@ class TestExecuteError:
 
     def test_eastmoney_http_failure_envelope(self) -> None:
         tool = StockNewsTool()
-        with patch.object(
-            eastmoney_client,
-            "throttled_get_json",
-            side_effect=RuntimeError("eastmoney banned"),
+        # Both A-share sources are stubbed: the direct client is the primary
+        # path and akshare is the fallback, so proving the error envelope needs
+        # them to fail together.
+        with (
+            patch.object(
+                eastmoney_client,
+                "throttled_get_json",
+                side_effect=RuntimeError("eastmoney banned"),
+            ),
+            patch.object(
+                stock_news_tool,
+                "_fetch_akshare_news",
+                side_effect=RuntimeError("akshare banned"),
+            ),
         ):
             out = json.loads(tool.execute(code="600519.SH"))
 
         assert out["ok"] is False
         assert "eastmoney banned" in out["error"]
+        assert "akshare banned" in out["error"]
+
+    def test_akshare_fallback_carries_headlines_when_eastmoney_drifts(self) -> None:
+        """The direct endpoint currently answers every query with a body that
+        carries no ``cmsArticleWebOld`` list, so the tool must fall through to
+        akshare instead of reporting "this stock has no news"."""
+        tool = StockNewsTool()
+        drifted = {"result": {"passportWeb": [{"uid": "1", "alias": "someone"}]}}
+        akshare_articles = [
+            {
+                "title": "金健米业600127龙虎榜数据",
+                "url": "http://finance.eastmoney.com/a/1.html",
+                "source": "东方财富Choice数据",
+                "published": "2026-09-21 17:11:52",
+                "snippet": "交易所公布的交易公开信息",
+            }
+        ]
+        with (
+            patch.object(
+                eastmoney_client, "throttled_get_json", return_value=drifted
+            ),
+            patch.object(
+                stock_news_tool, "_fetch_akshare_news", return_value=akshare_articles
+            ),
+        ):
+            out = json.loads(tool.execute(code="600127.SH", scope="stock", limit=5))
+
+        assert out["ok"] is True
+        assert out["market"] == "a_share"
+        assert out["source"] == "eastmoney"
+        assert out["data"]["articles"] == akshare_articles
 
     def test_yahoo_failure_envelope(self) -> None:
         tool = StockNewsTool()

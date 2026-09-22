@@ -175,6 +175,7 @@ class SymbolSearchTool(BaseTool):
     """Resolve a company name or ticker fragment to candidate symbols."""
 
     name = "search_symbol"
+    cache_ttl = 300.0  # read-only fetch; identical args are stable within a run
     description = (
         "Resolve a company name or ticker fragment to candidate trading symbols "
         "with their market, in the project's symbol convention (A-shares "

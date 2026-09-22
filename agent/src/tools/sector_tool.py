@@ -302,6 +302,7 @@ class SectorInfoTool(BaseTool):
     """Look up sector / concept board membership for a stock, or rank boards."""
 
     name = "get_sector_info"
+    cache_ttl = 300.0  # read-only fetch; identical args are stable within a run
     description = (
         "Look up Chinese A-share sector / concept board info via Eastmoney "
         "(free, no auth). Two modes: (1) membership — given a stock 'code' "

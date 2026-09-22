@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from unittest.mock import patch
 
 import pytest
@@ -402,3 +404,57 @@ class TestInitErrorFallback:
             }):
                 cls = get_loader_cls_with_fallback("fake_init_error")
                 assert cls is _FakeAvailableLoader
+
+
+# ---------------------------------------------------------------------------
+# Cold-start race: the import sweep must publish a *complete* registry to every
+# concurrent caller. The flag used to be set before the imports ran, so a
+# second thread sailed past the check while LOADER_REGISTRY was still empty and
+# its first concurrent batch resolved "Unknown data source" for every source in
+# the chain, returning no data at all.
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureRegisteredConcurrency:
+    def test_import_sweep_publishes_a_complete_registry(self) -> None:
+        from backtest.loaders import registry as reg
+
+        fake_name = "fake_concurrent_loader"
+        thread_count = 4
+        barrier = threading.Barrier(thread_count)
+        flag_during_import: list[bool] = []
+        registry_visible_to_callers: list[bool] = []
+
+        def fake_import(_module: str):
+            # The flag must stay False until the sweep has finished: setting it
+            # up front is exactly what let concurrent callers skip the imports.
+            flag_during_import.append(reg._registered)
+            time.sleep(0.05)  # widen the window the old code lost the race in
+            reg.LOADER_REGISTRY[fake_name] = _FakeAvailableLoader
+            return None
+
+        def worker() -> None:
+            barrier.wait()
+            reg._ensure_registered()
+            registry_visible_to_callers.append(fake_name in reg.LOADER_REGISTRY)
+
+        original_registered = reg._registered
+        try:
+            with patch.dict(reg.LOADER_REGISTRY, {}, clear=True), patch.object(
+                reg, "_LOADER_MODULES", ["fake.module"]
+            ), patch("importlib.import_module", side_effect=fake_import):
+                reg._registered = False
+                threads = [
+                    threading.Thread(target=worker) for _ in range(thread_count)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=10)
+        finally:
+            reg._registered = original_registered
+
+        # The sweep ran exactly once, and never advertised completion early.
+        assert flag_during_import == [False]
+        # Every caller saw the populated registry, not an empty one.
+        assert registry_visible_to_callers == [True] * thread_count

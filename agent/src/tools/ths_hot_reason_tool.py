@@ -60,6 +60,7 @@ class ThsHotReasonTool(BaseTool):
     """Tonghuashun daily strong stocks with sector-attribution reason tags."""
 
     name = "ths_hot_reason"
+    cache_ttl = 300.0  # read-only fetch; identical args are stable within a run
     description = (
         "Fetch today's strongest A-share stocks with manual sector-attribution tags (题材归因) "
         "from Tonghuashun (同花顺, zero auth, ~73ms, ~125 stocks/day). "

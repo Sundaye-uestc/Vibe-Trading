@@ -10,6 +10,7 @@ of import order.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Type
 
 from backtest.loaders.base import NoAvailableSourceError
@@ -24,11 +25,18 @@ LOADER_REGISTRY: dict[str, Type[Any]] = {}
 
 _registered = False
 
+# Guards the one-time import sweep in ``_ensure_registered``. Re-entrant on
+# purpose: ``resolve_loader`` / ``get_loader_cls_with_fallback`` (and
+# ``backtest.correlation``) call into it, and a loader module's own import
+# chain may reach it again from the same thread, where a plain ``Lock`` would
+# deadlock that thread against itself.
+_register_lock = threading.RLock()
+
 # Canonical set of accepted data-source names: every registered loader plus the
 # ``"auto"`` cross-market selector. Single source of truth shared by the backtest
 # config schema (``backtest.runner.BacktestConfigSchema``) and the agent-facing
 # backtest tool (``src.tools.backtest_tool``) so the two can never drift apart.
-# Keep in sync with ``_loader_modules`` below — the regression test
+# Keep in sync with ``_LOADER_MODULES`` below — the regression test
 # ``test_valid_sources_covers_all_registered_loaders`` enforces full coverage.
 VALID_SOURCES: set[str] = {
     "tushare",
@@ -71,6 +79,37 @@ def register(cls: Type[Any]) -> Type[Any]:
     return cls
 
 
+_LOADER_MODULES = [
+    "backtest.loaders.tushare",
+    "backtest.loaders.okx",
+    "backtest.loaders.nobitex",
+    "backtest.loaders.wallex",
+    "backtest.loaders.binance_loader",
+    "backtest.loaders.yfinance_loader",
+    "backtest.loaders.akshare_loader",
+    "backtest.loaders.baostock_loader",
+    "backtest.loaders.tencent_loader",
+    "backtest.loaders.mootdx_loader",
+    "backtest.loaders.ccxt_loader",
+    "backtest.loaders.futu",
+    "backtest.loaders.eastmoney_loader",
+    "backtest.loaders.sina_loader",
+    "backtest.loaders.stooq_loader",
+    "backtest.loaders.yahoo_loader",
+    "backtest.loaders.finnhub_loader",
+    "backtest.loaders.alphavantage_loader",
+    "backtest.loaders.tiingo_loader",
+    "backtest.loaders.fmp_loader",
+    "backtest.loaders.qveris_loader",  # QVERIS-INTEGRATION
+    "backtest.loaders.india_broker_loader",
+    "backtest.loaders.pykrx_loader",
+    "backtest.loaders.longbridge",
+    "backtest.loaders.mt5_loader",
+    "backtest.loaders.tickerall_loader",
+    "backtest.loaders.local_loader",
+]
+
+
 def _ensure_registered() -> None:
     """Import every known loader module so ``@register`` decorators fire.
 
@@ -85,43 +124,25 @@ def _ensure_registered() -> None:
     global _registered
     if _registered:
         return
-    _registered = True
 
-    _loader_modules = [
-        "backtest.loaders.tushare",
-        "backtest.loaders.okx",
-        "backtest.loaders.nobitex",
-        "backtest.loaders.wallex",
-        "backtest.loaders.binance_loader",
-        "backtest.loaders.yfinance_loader",
-        "backtest.loaders.akshare_loader",
-        "backtest.loaders.baostock_loader",
-        "backtest.loaders.tencent_loader",
-        "backtest.loaders.mootdx_loader",
-        "backtest.loaders.ccxt_loader",
-        "backtest.loaders.futu",
-        "backtest.loaders.eastmoney_loader",
-        "backtest.loaders.sina_loader",
-        "backtest.loaders.stooq_loader",
-        "backtest.loaders.yahoo_loader",
-        "backtest.loaders.finnhub_loader",
-        "backtest.loaders.alphavantage_loader",
-        "backtest.loaders.tiingo_loader",
-        "backtest.loaders.fmp_loader",
-        "backtest.loaders.qveris_loader",  # QVERIS-INTEGRATION
-        "backtest.loaders.india_broker_loader",
-        "backtest.loaders.pykrx_loader",
-        "backtest.loaders.longbridge",
-        "backtest.loaders.mt5_loader",
-        "backtest.loaders.tickerall_loader",
-        "backtest.loaders.local_loader",
-    ]
-    import importlib
-    for mod in _loader_modules:
-        try:
-            importlib.import_module(mod)
-        except Exception:
-            pass
+    # Double-checked under the lock, and the flag is set only *after* every
+    # module has been imported. Setting it up front let a second thread sail
+    # past the check while LOADER_REGISTRY was still empty, so its first
+    # concurrent batch resolved "Unknown data source" for every source in the
+    # chain and came back with no data at all.
+    with _register_lock:
+        if _registered:
+            return
+
+        import importlib
+
+        for mod in _LOADER_MODULES:
+            try:
+                importlib.import_module(mod)
+            except Exception:
+                pass
+
+        _registered = True
 
 
 # Sources that must NEVER silently fall through to a network loader when the

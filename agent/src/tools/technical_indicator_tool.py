@@ -170,6 +170,7 @@ class TechnicalIndicatorTool(BaseTool):
     """
 
     name = "technical_indicators"
+    cache_ttl = 300.0  # read-only fetch; identical args are stable within a run
     description = (
         "Compute common technical indicators (RSI, MACD, Bollinger Bands, "
         "SMA, EMA) for a trading symbol. Uses the project's data loaders "

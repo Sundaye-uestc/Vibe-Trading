@@ -47,6 +47,16 @@ _YAHOO_SUFFIXES = ("US", "HK")
 # Default broad-market query used when ``scope='global'`` carries no code.
 _GLOBAL_QUERY = "财经"
 
+# akshare's Eastmoney news scraper returns Chinese column names; map them onto
+# the compact English record this tool publishes.
+_AKSHARE_COLUMNS: dict[str, str] = {
+    "title": "新闻标题",
+    "url": "新闻链接",
+    "source": "文章来源",
+    "published": "发布时间",
+    "snippet": "新闻内容",
+}
+
 # Bounds so a noisy upstream can never return an unbounded payload.
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 50
@@ -130,6 +140,47 @@ def _decode_jsonp(payload: Any) -> Any:
         return None
 
 
+def _fetch_akshare_news(symbol: str, limit: int) -> list[dict[str, Any]]:
+    """Fetch A-share headlines through akshare's Eastmoney news scraper.
+
+    akshare maintains its own request shape for this surface, so it survives the
+    endpoint changes that break the direct client.
+
+    Args:
+        symbol: Bare 6-digit A-share code (no exchange suffix).
+        limit: Maximum number of articles to return.
+
+    Returns:
+        A capped list of compact article records; empty when nothing matched.
+
+    Raises:
+        Exception: Propagated so the caller can fall through to the next source.
+    """
+    import akshare as ak
+
+    frame = ak.stock_news_em(symbol=symbol)
+    if frame is None or getattr(frame, "empty", True):
+        return []
+
+    articles: list[dict[str, Any]] = []
+    for _, row in frame.iterrows():
+        record = {
+            field: row.get(column) for field, column in _AKSHARE_COLUMNS.items()
+        }
+        articles.append(
+            {
+                "title": _snippet(record["title"]),
+                "url": record["url"],
+                "source": record["source"],
+                "published": record["published"],
+                "snippet": _snippet(record["snippet"]),
+            }
+        )
+        if len(articles) >= limit:
+            break
+    return articles
+
+
 def _em_article(raw: dict[str, Any]) -> dict[str, Any]:
     """Project one Eastmoney CMS article into a compact, named record.
 
@@ -187,13 +238,18 @@ def _fetch_eastmoney_news(query: str, limit: int) -> list[dict[str, Any]]:
     )
     decoded = _decode_jsonp(payload)
     if not isinstance(decoded, dict):
-        return []
+        raise ValueError("eastmoney search returned a non-object body")
     result = decoded.get("result")
-    if not isinstance(result, dict):
-        return []
-    articles = result.get("cmsArticleWebOld")
+    articles = result.get("cmsArticleWebOld") if isinstance(result, dict) else None
     if not isinstance(articles, list):
-        return []
+        # This endpoint stopped honouring its parameters: every query now
+        # answers with the same cached ``passportWeb`` body. Reporting that as
+        # an empty result would read as "this stock has no news", so fail with
+        # the shape actually received instead.
+        shape = sorted(result) if isinstance(result, dict) else type(result).__name__
+        raise ValueError(
+            f"eastmoney search returned no article list (result keys: {shape})"
+        )
     return [_em_article(a) for a in articles if isinstance(a, dict)][:limit]
 
 
@@ -246,6 +302,7 @@ class StockNewsTool(BaseTool):
     """Read-only per-stock and global financial news headlines."""
 
     name = "get_stock_news"
+    cache_ttl = 300.0  # read-only fetch; identical args are stable within a run
     description = (
         "Fetch recent financial news headlines, read-only and no auth. Markets: "
         "China A-share (SH/SZ/BJ) returns Eastmoney news ARTICLES "
@@ -324,7 +381,10 @@ class StockNewsTool(BaseTool):
             articles = _fetch_eastmoney_news(_GLOBAL_QUERY, limit)
         except Exception as exc:  # noqa: BLE001 - surface any fetch failure as envelope
             logger.warning("global news fetch failed: %s", exc)
-            return self._error(f"eastmoney news fetch failed: {exc}")
+            return self._error(
+                f"no global headlines available ({exc}). "
+                "Try web_search for current market news."
+            )
         return self._ok(
             "global", "eastmoney", {"scope": "global", "articles": articles}
         )
@@ -351,7 +411,7 @@ class StockNewsTool(BaseTool):
             return self._error(f"invalid code: {code!r}")
 
         if suffix in _EM_SUFFIXES:
-            return self._stock_via_eastmoney(code, query, limit)
+            return self._stock_via_a_share(code, query, limit)
         if suffix in _YAHOO_SUFFIXES:
             return self._stock_via_yahoo(code, query, limit)
         return self._error(
@@ -359,17 +419,37 @@ class StockNewsTool(BaseTool):
             f"{_EM_SUFFIXES + _YAHOO_SUFFIXES}"
         )
 
-    def _stock_via_eastmoney(self, code: str, query: str, limit: int) -> str:
-        """Fetch A-share headlines from Eastmoney for one code."""
-        try:
-            articles = _fetch_eastmoney_news(query, limit)
-        except Exception as exc:  # noqa: BLE001 - surface any fetch failure as envelope
-            logger.warning("eastmoney news fetch failed for %s: %s", code, exc)
-            return self._error(f"eastmoney news fetch failed: {exc}")
-        return self._ok(
-            "a_share",
-            "eastmoney",
-            {"scope": "stock", "code": code, "articles": articles},
+    def _stock_via_a_share(self, code: str, query: str, limit: int) -> str:
+        """Fetch A-share headlines, trying each Eastmoney-backed source in turn.
+
+        The direct client goes first because it is the mockable HTTP boundary
+        this tool's tests drive; akshare is the fallback that keeps headlines
+        flowing while that surface answers every query with a cached payload.
+        Both feed the same article record, so only the source of the bytes
+        changes.
+        """
+        attempts: list[str] = []
+        for label, fetch in (
+            ("eastmoney", _fetch_eastmoney_news),
+            ("akshare", _fetch_akshare_news),
+        ):
+            try:
+                articles = fetch(query, limit)
+            except Exception as exc:  # noqa: BLE001 - surface any fetch failure as envelope
+                logger.warning("%s news fetch failed for %s: %s", label, code, exc)
+                attempts.append(f"{label}: {exc}")
+                continue
+            if articles:
+                return self._ok(
+                    "a_share",
+                    "eastmoney",
+                    {"scope": "stock", "code": code, "articles": articles},
+                )
+            attempts.append(f"{label}: no articles returned")
+
+        return self._error(
+            f"no A-share headlines for {code} ({'; '.join(attempts)}). "
+            "Try web_search for current coverage."
         )
 
     def _stock_via_yahoo(self, code: str, query: str, limit: int) -> str:

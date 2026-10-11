@@ -149,6 +149,8 @@ class ResearchPlaybook:
         config: Optional[Mapping[str, Any]] = None,
         next_run_at: Optional[int] = None,
         now_ms: Optional[int] = None,
+        delivery_format: Optional[str] = None,
+        protect_pdf: bool = False,
     ) -> ScheduledResearchJob:
         """Build a schedulable job from this playbook.
 
@@ -198,6 +200,10 @@ class ResearchPlaybook:
 
         job_config: Dict[str, Any] = dict(config or {})
         job_config.setdefault("playbook", self.slug)
+        if delivery_format not in {None, "html", "pdf"}:
+            raise ValueError("delivery_format must be 'html', 'pdf', or null")
+        if protect_pdf and delivery_format != "pdf":
+            raise ValueError("protect_pdf requires PDF email delivery")
 
         return ScheduledResearchJob(
             id=job_id or f"playbook-{self.slug}-{uuid.uuid4().hex[:8]}",
@@ -208,6 +214,8 @@ class ResearchPlaybook:
             created_at=now,
             config=job_config,
             timezone=tz,
+            delivery_format=delivery_format,
+            protect_pdf=protect_pdf,
         )
 
     def to_dict(self, include_body: bool = False) -> Dict[str, Any]:

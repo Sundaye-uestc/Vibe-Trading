@@ -20,6 +20,22 @@ from .verdict import VerdictRecord
 
 logger = logging.getLogger(__name__)
 
+
+def contains_pdf_password(value: Any) -> bool:
+    """Return whether a user-supplied config contains a PDF secret.
+
+    Passwords belong to the operator-managed Email channel configuration and
+    must never be persisted in a scheduled job or echoed by its API.
+    """
+    if isinstance(value, dict):
+        return any(
+            str(key).casefold() == "pdf_password" or contains_pdf_password(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(contains_pdf_password(item) for item in value)
+    return False
+
 # ---------------------------------------------------------------------------
 # Schedule validation
 # ---------------------------------------------------------------------------
@@ -380,6 +396,8 @@ class ScheduledResearchJob:
     delivery_target: Optional[str] = None
     delivery_target_ref: Optional[str] = None
     delivery_target_label: Optional[str] = None
+    delivery_format: Optional[str] = None
+    protect_pdf: bool = False
     delivery: DeliveryRecord = field(default_factory=DeliveryRecord)
     last_verdict: Optional[VerdictRecord] = None
 
@@ -390,6 +408,12 @@ class ScheduledResearchJob:
             A dict containing all job fields, with ``status`` as its string
             value.
         """
+        if contains_pdf_password(self.config):
+            raise ValueError("scheduled research config must not contain pdf_password")
+        if self.delivery_format not in {None, "html", "pdf"}:
+            raise ValueError("delivery_format must be 'html', 'pdf', or null")
+        if self.protect_pdf and self.delivery_format != "pdf":
+            raise ValueError("protect_pdf requires delivery_format='pdf'")
         return {
             "id": self.id,
             "prompt": self.prompt,
@@ -411,6 +435,8 @@ class ScheduledResearchJob:
             "delivery_target": self.delivery_target,
             "delivery_target_ref": self.delivery_target_ref,
             "delivery_target_label": self.delivery_target_label,
+            "delivery_format": self.delivery_format,
+            "protect_pdf": self.protect_pdf,
             "delivery": self.delivery.to_dict(),
             "last_verdict": self.last_verdict.to_dict() if self.last_verdict else None,
         }
@@ -484,10 +510,20 @@ class ScheduledResearchJob:
             raise TypeError("'end_at' must be an integer (epoch ms) or null")
         raw_config = data.get("config")
         config: Dict[str, Any] = raw_config if isinstance(raw_config, dict) else {}
+        if contains_pdf_password(config):
+            raise ValueError("scheduled research config must not contain pdf_password")
         delivery_channel = data.get("delivery_channel")
         delivery_target = data.get("delivery_target")
         delivery_target_ref = data.get("delivery_target_ref")
         delivery_target_label = data.get("delivery_target_label")
+        delivery_format = data.get("delivery_format")
+        if delivery_format not in {None, "html", "pdf"}:
+            raise ValueError("'delivery_format' must be 'html', 'pdf', or null")
+        protect_pdf = data.get("protect_pdf", False)
+        if not isinstance(protect_pdf, bool):
+            raise TypeError("'protect_pdf' must be a boolean")
+        if protect_pdf and delivery_format != "pdf":
+            raise ValueError("'protect_pdf' requires delivery_format='pdf'")
         for name, value in (
             ("delivery_channel", delivery_channel),
             ("delivery_target", delivery_target),
@@ -517,6 +553,8 @@ class ScheduledResearchJob:
             delivery_target=delivery_target,
             delivery_target_ref=delivery_target_ref,
             delivery_target_label=delivery_target_label,
+            delivery_format=delivery_format,
+            protect_pdf=protect_pdf,
             delivery=DeliveryRecord.from_dict(data.get("delivery")),
             last_verdict=_verdict_record_or_none(data.get("last_verdict"), job_id),
         )

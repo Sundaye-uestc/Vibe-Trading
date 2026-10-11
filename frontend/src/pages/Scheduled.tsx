@@ -91,6 +91,8 @@ export function Scheduled() {
   // it means the briefing stays in the app.
   const [deliveryChannel, setDeliveryChannel] = useState("");
   const [deliveryTarget, setDeliveryTarget] = useState("");
+  const [deliveryFormat, setDeliveryFormat] = useState<"" | "html" | "pdf">("");
+  const [protectPdf, setProtectPdf] = useState(false);
   const [saving, setSaving] = useState(false);
   const [composerError, setComposerError] = useState<string | null>(null);
 
@@ -169,12 +171,22 @@ export function Scheduled() {
         setComposerError(t("scheduled.deliveryTargetRequired"));
         return;
       }
+      if (deliveryFormat && channel !== "email") {
+        setComposerError(t("scheduled.deliveryFormatEmailOnly", { defaultValue: "HTML/PDF delivery is available only for the email channel" }));
+        return;
+      }
+      if (protectPdf && deliveryFormat !== "pdf") {
+        setComposerError(t("scheduled.deliveryProtectionRequiresPdf", { defaultValue: "PDF protection requires PDF delivery" }));
+        return;
+      }
       await api.createScheduledRun({
         prompt: prompt.trim(),
         schedule,
         timezone,
         delivery_channel: channel || null,
         delivery_target: channel ? target : null,
+        delivery_format: deliveryFormat || null,
+        protect_pdf: protectPdf,
       });
       setPrompt("");
       await refresh();
@@ -412,6 +424,38 @@ export function Scheduled() {
           </div>
         </div>
 
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <label htmlFor="scheduled-delivery-format" className={labelClass}>
+              {t("scheduled.deliveryFormatLabel", { defaultValue: "Email report format" })}
+            </label>
+            <select
+              id="scheduled-delivery-format"
+              value={deliveryFormat}
+              onChange={(e) => {
+                const value = e.target.value as "" | "html" | "pdf";
+                setDeliveryFormat(value);
+                if (value !== "pdf") setProtectPdf(false);
+              }}
+              className={fieldClass}
+            >
+              <option value="">{t("scheduled.deliveryFormatPlain", { defaultValue: "Plain text" })}</option>
+              <option value="html">HTML</option>
+              <option value="pdf">PDF attachment</option>
+            </select>
+            <p className={hintClass}>{t("scheduled.deliveryFormatHint", { defaultValue: "Choose HTML or PDF when delivery channel is email." })}</p>
+          </div>
+          <label className="flex items-center gap-2 self-end pb-2 text-sm">
+            <input
+              type="checkbox"
+              checked={protectPdf}
+              disabled={deliveryFormat !== "pdf"}
+              onChange={(e) => setProtectPdf(e.target.checked)}
+            />
+            {t("scheduled.protectPdf", { defaultValue: "Password-protect PDF (uses Email channel password)" })}
+          </label>
+        </div>
+
         {composerError && (
           <p role="alert" className="text-sm text-danger">
             {composerError}
@@ -508,6 +552,11 @@ export function Scheduled() {
                         {run.delivery_status === "failed" && run.delivery_error
                           ? ` — ${run.delivery_error}`
                           : ""}
+                      </p>
+                    )}
+                    {run.delivery_format && (
+                      <p className={hintClass}>
+                        {run.delivery_format.toUpperCase()}{run.protect_pdf ? " · " + t("scheduled.pdfProtected", { defaultValue: "password protected" }) : ""}
                       </p>
                     )}
                     {verdictCell(run)}

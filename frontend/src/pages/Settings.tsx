@@ -10,6 +10,7 @@ import { SourcePrioritySettings } from "@/components/settings/SourcePrioritySett
 import { api, isAuthRequiredError, type ChannelRuntimeStatus, type DataSourceSettings, type LLMProviderOption, type LLMSettings } from "@/lib/api";
 import { getApiAuthKey, setApiAuthKey } from "@/lib/apiAuth";
 import { ProfileSwitcher } from "@/components/settings/ProfileSwitcher";
+import { ChannelConfigPanel } from "@/components/settings/ChannelConfigPanel";
 
 interface LLMFormState {
   provider: string;
@@ -517,6 +518,7 @@ export function Settings() {
       <QVerisSettings />
 
       {channelsSection}
+      <ChannelConfigPanel />
 
       <div className="space-y-2">
         <h2 className="text-lg font-semibold tracking-tight">{t("settings.llmSettings")}</h2>

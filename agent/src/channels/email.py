@@ -3,6 +3,7 @@
 import asyncio
 import html
 import imaplib
+from io import BytesIO
 import mimetypes
 import re
 import smtplib
@@ -28,6 +29,7 @@ from src.channels.base import BaseChannel
 from src.channels.utils import get_media_dir
 from pydantic import BaseModel
 from src.channels.utils import safe_filename
+from src.channels.rich_text import render_email_html, render_email_pdf
 
 
 class EmailConfig(BaseModel):
@@ -47,6 +49,9 @@ class EmailConfig(BaseModel):
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password: str = ""
+    # Operator-managed secret used only for explicitly protected PDF reports.
+    # It is never included in scheduled job payloads or API responses.
+    pdf_password: str = Field(default="", repr=False)
     smtp_use_tls: bool = True
     smtp_use_ssl: bool = False
     from_address: str = ""
@@ -285,11 +290,34 @@ class EmailChannel(BaseChannel):
             fallback = "\n".join(failed_attachments)
             content = f"{content.rstrip()}\n\n{fallback}" if content.strip() else fallback
 
+        metadata = msg.metadata or {}
+        delivery_format = metadata.get("delivery_format")
+        if delivery_format not in {"html", "pdf"}:
+            delivery_format = None
+        protect_pdf = metadata.get("protect_pdf") is True
+        if protect_pdf and delivery_format != "pdf":
+            raise ValueError("PDF protection requires PDF delivery")
+        if protect_pdf and not self.config.pdf_password:
+            raise RuntimeError("PDF protection requested but no PDF password is configured")
+
         email_msg = EmailMessage()
         email_msg["From"] = self.config.from_address or self.config.smtp_username or self.config.imap_username
         email_msg["To"] = to_addr
         email_msg["Subject"] = subject
-        email_msg.set_content(content)
+        generated_pdf: bytes | None = None
+        if delivery_format == "pdf":
+            # Keep private report content out of the body. If rendering fails,
+            # fail closed so a requested PDF is never silently sent as text.
+            notice = "Report attached as PDF."
+            email_msg.set_content(notice)
+            email_msg.add_alternative(render_email_html(notice), subtype="html")
+            generated_pdf = await asyncio.to_thread(render_email_pdf, content)
+            if protect_pdf:
+                generated_pdf = await asyncio.to_thread(self._encrypt_pdf, generated_pdf)
+        else:
+            email_msg.set_content(content)
+            if delivery_format == "html":
+                email_msg.add_alternative(render_email_html(content), subtype="html")
 
         for data, maintype, subtype, filename in attachments:
             email_msg.add_attachment(
@@ -297,6 +325,13 @@ class EmailChannel(BaseChannel):
                 maintype=maintype,
                 subtype=subtype,
                 filename=filename,
+            )
+        if generated_pdf is not None:
+            email_msg.add_attachment(
+                generated_pdf,
+                maintype="application",
+                subtype="pdf",
+                filename="vibe-trading-report.pdf",
             )
 
         in_reply_to = self._last_message_id_by_chat.get(to_addr)
@@ -309,6 +344,24 @@ class EmailChannel(BaseChannel):
         except Exception:
             self.logger.exception("Error sending to {}", to_addr)
             raise
+
+    def _encrypt_pdf(self, pdf_data: bytes) -> bytes:
+        """Encrypt a generated PDF with the private channel password."""
+        password = self.config.pdf_password
+        if not password:
+            raise RuntimeError("PDF protection requested but no PDF password is configured")
+        try:
+            from pypdf import PdfReader, PdfWriter
+
+            reader = PdfReader(BytesIO(pdf_data))
+            writer = PdfWriter()
+            writer.append_pages_from_reader(reader)
+            writer.encrypt(user_password=password, algorithm="AES-256")
+            output = BytesIO()
+            writer.write(output)
+            return output.getvalue()
+        except Exception as exc:
+            raise RuntimeError("PDF protection failed") from exc
 
     def _validate_config(self) -> bool:
         missing = []

@@ -182,6 +182,17 @@ def build_job_from_draft(
     elif mode != "in_app":
         raise ValueError("delivery.mode must be 'in_app', 'origin', or 'configured'")
 
+    delivery_format = delivery_spec.get("format")
+    protect_pdf = delivery_spec.get("protect_pdf", False)
+    if delivery_format not in (None, "html", "pdf"):
+        raise ValueError("delivery.format must be 'html', 'pdf', or null")
+    if delivery_format is not None and delivery_channel != "email":
+        raise ValueError("delivery.format is supported only for email delivery")
+    if not isinstance(protect_pdf, bool):
+        raise ValueError("delivery.protect_pdf must be a boolean")
+    if protect_pdf and delivery_format != "pdf":
+        raise ValueError("delivery.protect_pdf requires PDF email delivery")
+
     return ScheduledResearchJob(
         id=str(draft.get("id") or f"sr-{uuid.uuid4().hex[:12]}"),
         title=title,
@@ -199,6 +210,8 @@ def build_job_from_draft(
         delivery_target=delivery_target,
         delivery_target_ref=target_ref,
         delivery_target_label=target_label,
+        delivery_format=delivery_format,
+        protect_pdf=protect_pdf,
     )
 
 

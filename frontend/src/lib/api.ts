@@ -531,6 +531,17 @@ export const api = {
       body: JSON.stringify(settings),
     }),
   getChannelStatus: () => request<ChannelRuntimeStatus>("/channels/status"),
+  getChannelConfig: () => request<ChannelConfigResponse>("/channels/config"),
+  updateChannelConfig: (name: string, config: Record<string, unknown>, clear: string[] = []) =>
+    request<{ channel: ChannelConfigEntry; applied: string }>(`/channels/config/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      body: JSON.stringify({ config, ...Object.fromEntries(clear.map((key) => [`clear_${key}`, true])) }),
+    }),
+  testChannelConfig: (name: string, config?: Record<string, unknown>) =>
+    request<{ ok: boolean; code: string; detail?: string }>(`/channels/${encodeURIComponent(name)}/test`, {
+      method: "POST",
+      body: JSON.stringify({ config }),
+    }),
   startChannels: () => request<ChannelRuntimeActionResponse>("/channels/start", { method: "POST" }),
   stopChannels: () => request<ChannelRuntimeActionResponse>("/channels/stop", { method: "POST" }),
   runChannelPairingCommand: (body: ChannelPairingCommandRequest) =>
@@ -666,6 +677,8 @@ export interface ScheduledRun {
   delivery_target: string | null;
   delivery_target_ref: string | null;
   delivery_target_label: string | null;
+  delivery_format: "html" | "pdf" | null;
+  protect_pdf: boolean;
   delivery_status: string;
   delivery_error: string | null;
   delivery_updated_at: number | null;
@@ -687,6 +700,8 @@ export interface CreateScheduledRunRequest {
   delivery_channel?: string | null;
   delivery_target?: string | null;
   delivery_target_ref?: string | null;
+  delivery_format?: "html" | "pdf" | null;
+  protect_pdf?: boolean;
 }
 
 export interface ScheduledResearchProposalJob {
@@ -897,6 +912,37 @@ export interface ChannelPairingCommandRequest {
 export interface ChannelPairingCommandResponse {
   channel: string;
   reply: string;
+}
+
+export interface ChannelFieldHint {
+  key: string;
+  type: "text" | "password" | "bool" | "list";
+  secret: boolean;
+  required: boolean;
+  help_key?: string | null;
+  choices?: string[];
+}
+
+export interface ChannelConfigEntry {
+  display_name: string;
+  available: boolean;
+  configured: boolean;
+  enabled: boolean;
+  loaded: boolean;
+  running: boolean;
+  install_hint?: string;
+  error?: string;
+  supports_test: boolean;
+  fields: ChannelFieldHint[];
+  values: Record<string, unknown>;
+  secrets: Record<string, { set: boolean; masked: string }>;
+}
+
+export interface ChannelConfigResponse {
+  config_path: string;
+  writable: boolean;
+  runtime_running: boolean;
+  channels: Record<string, ChannelConfigEntry>;
 }
 
 // --- Types matching backend API contracts ---

@@ -57,7 +57,10 @@ def resolve_rebalance_dates(
 
     if isinstance(validated, str):
         offset = to_offset(validated)
-        bounds: list[int] = dates.asi8.tolist()
+        # ``Timestamp.value`` and ``offset.nanos`` are always nanoseconds, so the
+        # bound array must be too. ``asi8`` is in the index's native unit --
+        # microseconds on pandas 3 -- which made every comparison off by 1000x.
+        bounds: list[int] = dates.as_unit("ns").asi8.tolist()
         spacings = [
             current - previous
             for previous, current in zip(bounds, bounds[1:])
@@ -83,7 +86,7 @@ def resolve_rebalance_dates(
             selected.append(timestamp)
     else:
         selected = []
-        bounds: list[int] = dates.asi8.tolist()
+        bounds: list[int] = dates.as_unit("ns").asi8.tolist()
         for item in validated:
             requested = cast(pd.Timestamp, pd.Timestamp(item))
             if dates.tz is not None:

@@ -690,6 +690,42 @@ class TestAlign:
         assert close_df.index.equals(dates)
         assert pos_df.index.equals(dates)
 
+    def test_microsecond_calendar_is_not_shifted_to_1970(self) -> None:
+        """A ``datetime64[us]`` calendar must survive the merge intact.
+
+        Microsecond is the default resolution on pandas 3. ``_align`` used to
+        merge ``index.asi8`` -- int64 in that native unit -- and hand the result
+        to ``pd.DatetimeIndex``, which always reads integers as nanoseconds. All
+        aligned dates landed in 1970, so ``ts`` matched no real bar and every
+        order was rejected as ``no_bar`` while the artifacts carried 1970
+        timestamps (#1447).
+        """
+        dates = pd.bdate_range("2024-08-30", periods=6).as_unit("us")
+        frame = pd.DataFrame({"open": 10.0, "close": 10.0}, index=dates)
+        signals = pd.Series(0.0, index=dates)
+
+        out_dates, close_df, _, _, _ = _align({"A": frame}, {"A": signals}, ["A"])
+
+        assert out_dates.equals(dates), out_dates
+        assert out_dates[0] == pd.Timestamp("2024-08-30")
+        assert close_df.index.equals(dates)
+        assert bool(close_df["A"].notna().all())
+
+    def test_mixed_resolution_calendars_align_on_the_same_days(self) -> None:
+        """Symbols stored at different resolutions share one aligned calendar."""
+        us = pd.bdate_range("2024-08-30", periods=4).as_unit("us")
+        ns = pd.bdate_range("2024-08-30", periods=4).as_unit("ns")
+        data_map = {
+            "A": pd.DataFrame({"open": 10.0, "close": 10.0}, index=us),
+            "B": pd.DataFrame({"open": 20.0, "close": 20.0}, index=ns),
+        }
+        signal_map = {"A": pd.Series(0.0, index=us), "B": pd.Series(0.0, index=ns)}
+
+        out_dates, close_df, _, _, _ = _align(data_map, signal_map, ["A", "B"])
+
+        assert list(out_dates) == list(pd.bdate_range("2024-08-30", periods=4))
+        assert bool(close_df.notna().all().all())
+
     def test_output_shapes(self) -> None:
         data_map, signal_map, dates = _simple_data_and_signals()
         out_dates, close_df, _, pos_df, ret_df = _align(data_map, signal_map, ["A", "B"])

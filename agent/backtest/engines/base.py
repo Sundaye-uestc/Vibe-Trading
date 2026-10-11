@@ -259,10 +259,17 @@ def _align(
     """
     # Build unified sorted date index from all symbols' trading calendars
     indexes = [data_map[c].index for c in codes]
-    merged = np.unique(np.concatenate([index.asi8 for index in indexes]))
+    # Union the datetime64 values themselves, never ``asi8``: ``asi8`` is int64
+    # in the index's *native* unit -- microseconds on pandas 3, nanoseconds on
+    # pandas 2 -- while ``pd.DatetimeIndex`` reads a raw integer array as
+    # nanoseconds. Handing it microseconds shifted every aligned date into 1970,
+    # so ``ts`` matched no real bar and every order was rejected as ``no_bar``.
+    merged = np.unique(np.concatenate([index.values for index in indexes]))
     common_tz = indexes[0].tz
     if all(index.tz == common_tz for index in indexes) and common_tz is not None:
-        dates = pd.DatetimeIndex(pd.to_datetime(merged, utc=True).tz_convert(common_tz))
+        # ``.values`` on a tz-aware index is the UTC instant, so localize before
+        # converting to the shared zone.
+        dates = pd.DatetimeIndex(merged).tz_localize("UTC").tz_convert(common_tz)
     else:
         dates = pd.DatetimeIndex(merged)
 
@@ -280,7 +287,12 @@ def _align(
     close_arr = np.full((n_dates, n_codes), np.nan)
     for j, c in enumerate(codes):
         series = data_map[c]["close"]
-        row_idx = np.searchsorted(dates_i8, series.index.values.view("i8"))
+        # ``dates`` carries the finest unit of the merged calendars, so a
+        # symbol whose own index is coarser must be lifted to it before the
+        # int64 comparison -- otherwise the two sides differ by 1000x.
+        row_idx = np.searchsorted(
+            dates_i8, series.index.as_unit(dates.unit).values.view("i8")
+        )
         close_arr[row_idx, j] = series.values
 
     # Vectorized ffill with limit using pandas (C-optimized internals)
@@ -320,7 +332,9 @@ def _align(
         shifted_vals[0] = 0.0
         shifted_vals[1:] = sig_vals[:-1]
         # Place into unified grid via searchsorted
-        row_idx = np.searchsorted(dates_i8, own_idx.values.view("i8"))
+        row_idx = np.searchsorted(
+            dates_i8, own_idx.as_unit(dates.unit).values.view("i8")
+        )
         pos_arr[row_idx, j] = shifted_vals
 
     # Vectorized ffill with limit using pandas (C-optimized)

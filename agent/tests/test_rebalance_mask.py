@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from backtest.engines.base import BaseEngine
+from backtest.rebalance_mask import resolve_rebalance_dates
 from backtest.runner import BacktestConfigSchema
 
 
@@ -144,6 +145,21 @@ def test_mask_without_trading_date_intersection_is_rejected() -> None:
 def test_invalid_mask_alias_is_rejected() -> None:
     with pytest.raises(ValueError, match="rebalance_mask"):
         _MaskEngine(rebalance_mask="monthly")
+
+
+def test_explicit_mask_resolves_at_microsecond_resolution() -> None:
+    """An explicit mask must not depend on the calendar's resolution.
+
+    ``bounds`` came from ``dates.asi8`` -- microseconds on pandas 3 -- while
+    ``Timestamp.value`` is always nanoseconds, so the comparison was off by
+    1000x and every requested date fell past the end of the calendar instead of
+    selecting its bar.
+    """
+    dates = pd.bdate_range("2025-05-30", periods=5).as_unit("us")
+
+    selected = resolve_rebalance_dates(["2025-06-03"], dates)
+
+    assert selected == frozenset({pd.Timestamp("2025-06-03")})
 
 
 @pytest.mark.parametrize("alias", ["h", "bh"])

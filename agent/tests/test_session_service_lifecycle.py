@@ -379,6 +379,113 @@ def test_normal_history_is_untouched():
     assert [m["content"] for m in history] == ["first", "second"]
 
 
+def _msg(role: str, content: str, *, message_id: str = "", metadata=None):
+    return type(
+        "M",
+        (),
+        {"role": role, "content": content, "message_id": message_id, "metadata": metadata or {}},
+    )()
+
+
+def test_compaction_marker_replaces_the_folded_head_with_its_summary():
+    """A marker collapses everything before it; the tail after it still replays."""
+    messages = [
+        _msg("user", "folded question", message_id="m1"),
+        _msg("assistant", "folded answer", message_id="m2"),
+        _msg(
+            "system",
+            "HANDOFF SUMMARY",
+            message_id="c1",
+            metadata={"type": "compaction", "through": "m2"},
+        ),
+        _msg("user", "kept question", message_id="m3"),
+        _msg("assistant", "kept answer", message_id="m4"),
+        _msg("user", "current turn is dropped", message_id="m5"),
+    ]
+
+    history = SessionService._convert_messages_to_history(messages)
+    contents = [entry["content"] for entry in history]
+
+    assert "HANDOFF SUMMARY" in contents[0]
+    assert history[0]["role"] == "user"
+    assert contents[1:] == ["kept question", "kept answer"]
+    assert all("folded" not in entry for entry in contents)
+
+
+def test_compaction_marker_is_pinned_against_the_trim_budget():
+    """The summary must survive the budget it was created to relieve."""
+    messages = [
+        _msg("system", "S" * 50, message_id="c1", metadata={"type": "compaction"}),
+        _msg("assistant", "x" * 20000, message_id="m1"),
+        _msg("user", "current turn is dropped", message_id="m2"),
+    ]
+
+    history = SessionService._convert_messages_to_history(messages)
+
+    assert history[0]["content"] == (
+        "[Conversation compressed — handoff summary]\n\n" + "S" * 50
+    )
+
+
+class TestCompactSession:
+    def test_compact_appends_a_marker_and_leaves_the_original_log(self, tmp_path, monkeypatch):
+        from src.session.models import Message
+
+        service = _service(tmp_path, monkeypatch)
+        session = service.create_session(title="compact me")
+        for index in range(8):
+            service.store.append_message(
+                Message(
+                    session_id=session.session_id,
+                    role="user" if index % 2 == 0 else "assistant",
+                    content=f"turn {index}",
+                )
+            )
+
+        class _FakeLLM:
+            def __init__(self, **kwargs) -> None:
+                del kwargs
+
+            def chat(self, messages, **kwargs):
+                del messages, kwargs
+                return type("R", (), {"content": "SUMMARY BODY"})()
+
+        monkeypatch.setattr("src.providers.chat.ChatLLM", _FakeLLM)
+
+        result = asyncio.run(service.compact_session(session.session_id))
+
+        assert result["status"] == "compacted"
+        stored = service.store.get_messages(session.session_id)
+        # 8 originals + 1 marker; nothing was removed.
+        assert len(stored) == 9
+        marker = stored[-1]
+        assert marker.metadata["type"] == "compaction"
+        assert marker.content == "SUMMARY BODY"
+        # The head is everything except the last 4 turns, so the marker points
+        # at the 4th original message (index 3 of the 9 stored rows).
+        assert marker.metadata["through"] == stored[-6].message_id
+
+    def test_compact_is_a_noop_for_a_short_history(self, tmp_path, monkeypatch):
+        from src.session.models import Message
+
+        service = _service(tmp_path, monkeypatch)
+        session = service.create_session(title="short")
+        service.store.append_message(
+            Message(session_id=session.session_id, role="user", content="hi")
+        )
+
+        result = asyncio.run(service.compact_session(session.session_id))
+
+        assert result["status"] == "noop"
+        assert len(service.store.get_messages(session.session_id)) == 1
+
+    def test_compact_refuses_a_missing_session(self, tmp_path, monkeypatch):
+        service = _service(tmp_path, monkeypatch)
+
+        with pytest.raises(ValueError):
+            asyncio.run(service.compact_session("missing"))
+
+
 def test_claim_is_released_when_pre_run_bookkeeping_fails(tmp_path, monkeypatch):
     """A failure before the agent even starts must not brick the session.
 

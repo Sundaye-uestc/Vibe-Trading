@@ -14,6 +14,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Minimize2,
   Download,
   Landmark,
   Loader2,
@@ -76,6 +77,8 @@ interface Props {
   onCancelGoal: () => void;
   onStartSwarm: () => void;
   onCancelSwarm: () => void;
+  onCompact: () => void;
+  compacting: boolean;
 }
 
 export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer({
@@ -94,6 +97,8 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
   onCancelGoal,
   onStartSwarm,
   onCancelSwarm,
+  onCompact,
+  compacting,
 }, ref) {
   const { t } = useTranslation();
   const [input, setInput] = useState("");
@@ -397,6 +402,20 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
               >
                 <Landmark className="h-4 w-4" />
                 {t("agent.analyzePortfolio")}
+              </button>
+              <div className="border-t my-1" />
+              <button
+                type="button"
+                role="menuitem"
+                disabled={streaming || compacting}
+                onClick={() => {
+                  setShowUploadMenu(false);
+                  onCompact();
+                }}
+                className="w-full px-3 py-2 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none"
+              >
+                <Minimize2 className="h-4 w-4" />
+                {compacting ? t("agent.compactingContext") : t("agent.compactContext")}
               </button>
             </div>
           )}

@@ -62,7 +62,7 @@ function groupMessages(msgs: StoredAgentMessage[]): MsgGroup[] {
     }
   };
   for (const [msgIdx, m] of msgs.entries()) {
-    if (["thinking", "tool_call", "tool_result", "compact"].includes(m.type)) {
+    if (["thinking", "tool_call", "tool_result"].includes(m.type)) {
       if (bufStartIdx < 0) bufStartIdx = msgIdx;
       buf.push(m);
     } else {
@@ -253,6 +253,10 @@ export function Agent() {
   const visibleRowsSessionRef = useRef<string | null>(null);
   const [llmSettings, setLlmSettings] = useState<LLMSettings | null>(null);
   const [runtimeIdentity, setRuntimeIdentity] = useState<RuntimeIdentity>({});
+  // Pending reasoning-effort choice for this session. null = follow the
+  // runtime/settings value; a string (incl. "") is sent with the next message.
+  const [effortOverride, setEffortOverride] = useState<string | null>(null);
+  const [compacting, setCompacting] = useState(false);
 
   const messages = useAgentStore(s => s.messages);
   const streamingText = useAgentStore(s => s.streamingText);
@@ -563,7 +567,15 @@ export function Agent() {
           ? toolTimeline[toolTimeline.length - 1].timestamp
           : ts - 1;
         const assistantTs = Math.max(ts, lastToolTimestamp + 1);
-        if (m.role === "user") {
+        if (m.role === "system" && meta?.type === "compaction") {
+          // A persisted compaction marker: rendered as a divider, not an answer.
+          agentMsgs.push({
+            id: m.message_id,
+            type: "compact",
+            content: m.content,
+            timestamp: ts,
+          });
+        } else if (m.role === "user") {
           const displayPrompt = toDisplayPrompt(m.content);
           agentMsgs.push({
             id: m.message_id,
@@ -1261,6 +1273,18 @@ export function Agent() {
       // Cached rows provide an instant shell; REST remains authoritative for a
       // turn that completed while this session was off-screen.
       loadSessionMessages(urlSessionId, gen);
+      // The effort picker starts from whatever this session last committed;
+      // null means "no explicit choice" and falls back to runtime/settings.
+      void api.getSession(urlSessionId).then((session) => {
+        if (genRef.current !== gen) return;
+        // `undefined`/`null` = never chosen (fall back to runtime/settings);
+        // "" is an explicit "provider default" and must be preserved as such.
+        setEffortOverride(
+          typeof session.reasoning_effort === "string"
+            ? session.reasoning_effort
+            : null,
+        );
+      }).catch(() => {});
       setupSSE(urlSessionId);
     } else if (urlSessionId && urlSessionId === curSid && sseSessionRef.current !== urlSessionId) {
       // #229: returning to the SAME session after the page was unmounted (user
@@ -1297,6 +1321,7 @@ export function Agent() {
       liveRuntimeRef.current?.resetSession();
       if (curSid && curMsgs.length > 0) cacheSession(curSid, curMsgs);
       reset();
+      setEffortOverride(null);
     }
   }, [urlSessionId, doDisconnect, loadSessionMessages, setupSSE, forceScrollToBottom]);
 
@@ -1393,7 +1418,7 @@ export function Agent() {
         act().setStatus("streaming");
         forceScrollToBottom();
         setupSSE(sid);
-        const sent = await api.sendMessage(sid, kickoff);
+        const sent = await api.sendMessage(sid, kickoff, effortOverride ?? undefined);
         if (act().activity?.attemptId.startsWith("pending-")) {
           act().setActivityAttemptId(sent.attempt_id);
         }
@@ -1446,7 +1471,7 @@ export function Agent() {
         setSearchParams({ session: sid }, { replace: true });
       }
       setupSSE(sid);
-      const sent = await api.sendMessage(sid, finalPrompt);
+      const sent = await api.sendMessage(sid, finalPrompt, effortOverride ?? undefined);
       if (act().activity?.attemptId.startsWith("pending-")) {
         act().setActivityAttemptId(sent.attempt_id);
       }
@@ -1463,6 +1488,7 @@ export function Agent() {
     clearStreamingView,
     ensureGoalSession,
     forceScrollToBottom,
+    effortOverride,
     goalComposerActive,
     setSearchParams,
     setupSSE,
@@ -1535,7 +1561,7 @@ export function Agent() {
     composerRef.current?.focus();
     try {
       setupSSE(sessionId);
-      const sent = await api.sendMessage(sessionId, prompt);
+      const sent = await api.sendMessage(sessionId, prompt, effortOverride ?? undefined);
       if (act().activity?.attemptId.startsWith("pending-")) {
         act().setActivityAttemptId(sent.attempt_id);
       }
@@ -1547,7 +1573,7 @@ export function Agent() {
       toast.error(message);
       act().addMessage({ id: "", type: "error", content: message, timestamp: Date.now() });
     }
-  }, [archiveActivity, forceScrollToBottom, goalSnapshot, sessionId, setupSSE, status, syncCompletedAttempt, t]);
+  }, [archiveActivity, effortOverride, forceScrollToBottom, goalSnapshot, sessionId, setupSSE, status, syncCompletedAttempt, t]);
 
   const handleRetry = useCallback((errorMsg: AgentMessage) => {
     if (status === "streaming") return;
@@ -1595,6 +1621,31 @@ export function Agent() {
   const handleGoalSnapshotChange = useCallback((snapshot: GoalSnapshot | null) => {
     setGoalSnapshot(snapshot);
   }, []);
+
+  const handleEffortChange = useCallback((value: string) => {
+    setEffortOverride(value);
+  }, []);
+
+  const handleCompact = useCallback(async () => {
+    const sid = act().sessionId;
+    if (!sid || compacting) return;
+    setCompacting(true);
+    try {
+      const result = await api.compactSession(sid);
+      if (result.status === "compacted") {
+        toast.success(t("agent.contextCompacted"));
+        await refreshSessionMessages(sid);
+      } else {
+        toast.info(t("agent.nothingToCompact"));
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : t("agent.compactFailed"),
+      );
+    } finally {
+      setCompacting(false);
+    }
+  }, [compacting, refreshSessionMessages, t]);
 
   const handleStartGoal = useCallback(() => {
     setSwarmPreset(null);
@@ -1721,6 +1772,9 @@ export function Agent() {
         runtimeProvider={visibleRuntimeIdentity.provider}
         runtimeModel={visibleRuntimeIdentity.model}
         runtimeReasoningEffort={visibleRuntimeIdentity.reasoningEffort}
+        effortOverride={effortOverride}
+        onEffortChange={handleEffortChange}
+        disabled={status === "streaming"}
       />
       <div
         ref={listRef}
@@ -1904,6 +1958,8 @@ export function Agent() {
               onCancelGoal={handleCancelGoalComposer}
               onStartSwarm={handleStartSwarm}
               onCancelSwarm={handleCancelSwarm}
+              onCompact={handleCompact}
+              compacting={compacting}
             />
           </LiveRuntimePanel>
         </div>

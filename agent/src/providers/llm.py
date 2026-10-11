@@ -1486,12 +1486,20 @@ def provider_diagnostics() -> dict[str, Any]:
     }
 
 
-def build_llm(*, model_name: Optional[str] = None, callbacks: Any = None) -> Any:
+def build_llm(
+    *,
+    model_name: Optional[str] = None,
+    callbacks: Any = None,
+    reasoning_effort: Optional[str] = None,
+) -> Any:
     """Construct the configured LangChain chat model.
 
     Args:
         model_name: Model name; defaults to LANGCHAIN_MODEL_NAME.
         callbacks: Optional LangChain callbacks.
+        reasoning_effort: Optional per-call override for LANGCHAIN_REASONING_EFFORT.
+            ``None`` inherits the environment value; any other string (including
+            the empty string) wins over it.
 
     Returns:
         Provider-specific LangChain chat model.
@@ -1506,10 +1514,14 @@ def build_llm(*, model_name: Optional[str] = None, callbacks: Any = None) -> Any
     temperature = get_env_config().llm.langchain_temperature
     provider = get_env_config().llm.langchain_provider.lower()
     caps = get_provider_capabilities(provider, name)
+    effort = (
+        reasoning_effort.strip().lower()
+        if isinstance(reasoning_effort, str)
+        else get_env_config().llm.langchain_reasoning_effort.strip().lower()
+    )
     if provider in {"openai-codex", "openai_codex"}:
         from src.providers.openai_codex import OpenAICodexLLM
 
-        effort = get_env_config().llm.langchain_reasoning_effort.strip().lower()
         return OpenAICodexLLM(
             model=name,
             temperature=temperature,
@@ -1530,7 +1542,7 @@ def build_llm(*, model_name: Optional[str] = None, callbacks: Any = None) -> Any
             model=name,
             temperature=temperature,
             callbacks=callbacks,
-            effort=get_env_config().llm.langchain_reasoning_effort.strip().lower(),
+            effort=effort,
         )
 
     if provider == "deepseek":
@@ -1563,7 +1575,6 @@ def build_llm(*, model_name: Optional[str] = None, callbacks: Any = None) -> Any
     ):
         logger.info("Forcing temperature=1.0 for %s (provider requirement)", name)
         temperature = 1.0
-    effort = get_env_config().llm.langchain_reasoning_effort.strip().lower()
     # Moonshot/DeepSeek official APIs emit reasoning by default and ignore this field.
     configured_responses_api = get_env_config().llm.langchain_use_responses_api
     use_responses_api = uses_responses_api(provider, configured_responses_api)

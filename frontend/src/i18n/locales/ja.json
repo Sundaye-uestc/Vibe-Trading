@@ -610,6 +610,11 @@
   },
   "agent": {
     "reasoningStrength": "推論強度",
+    "compactContext": "コンテキストを圧縮",
+    "compactingContext": "圧縮中…",
+    "contextCompacted": "コンテキストを圧縮しました",
+    "nothingToCompact": "圧縮する内容がありません",
+    "compactFailed": "コンテキストを圧縮できませんでした",
     "unknownProvider": "不明なプロバイダー",
     "unknownModel": "不明なモデル",
     "connectionLostReconnect": "接続が切断されました。再接続しています…",

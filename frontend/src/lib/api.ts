@@ -408,6 +408,7 @@ export const api = {
   getRunPine: (id: string) => request<PineScriptResult>(`/runs/${id}/pine`),
   listSessions: () => request<SessionItem[]>("/sessions"),
   createSession: (title?: string) => request<SessionItem>("/sessions", { method: "POST", body: JSON.stringify({ title: title || "" }) }),
+  getSession: (sid: string) => request<SessionItem>(`/sessions/${sid}`),
   deleteSession: (sid: string) => request<{ status: string }>(`/sessions/${sid}`, { method: "DELETE" }),
   renameSession: (sid: string, title: string) => request<{ status: string }>(`/sessions/${sid}`, { method: "PATCH", body: JSON.stringify({ title }) }),
   // Codex-style LLM summary title from the first exchange; backend refuses to
@@ -430,7 +431,23 @@ export const api = {
       `/scheduled-runs/proposals/${encodeURIComponent(proposalId)}/discard`,
       { method: "POST" },
     ),
-  sendMessage: (sid: string, content: string) => request<{ message_id: string; attempt_id: string }>(`/sessions/${sid}/messages`, { method: "POST", body: JSON.stringify({ content }) }),
+  sendMessage: (sid: string, content: string, reasoningEffort?: string) =>
+    request<{ message_id: string; attempt_id: string }>(
+      `/sessions/${sid}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify(
+          reasoningEffort === undefined
+            ? { content }
+            : { content, reasoning_effort: reasoningEffort },
+        ),
+      },
+    ),
+  compactSession: (sid: string) =>
+    request<{ status: string; reason?: string; tokens_before?: number }>(
+      `/sessions/${sid}/compact`,
+      { method: "POST" },
+    ),
   cancelSession: (sid: string) => request<{ status: string }>(`/sessions/${sid}/cancel`, { method: "POST" }),
   getSessionMessages: (sid: string) => request<MessageItem[]>(`/sessions/${sid}/messages`),
   createGoal: (sid: string, body: CreateGoalRequest) =>
@@ -1265,6 +1282,7 @@ export interface SessionItem {
   created_at?: string;
   updated_at?: string;
   last_attempt_id?: string;
+  reasoning_effort?: string;
 }
 
 // --- Goal types ---

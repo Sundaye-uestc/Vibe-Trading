@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ModelRuntimeBar } from "../ModelRuntimeBar";
 import type { LLMSettings } from "@/lib/api";
 
@@ -61,5 +62,75 @@ describe("ModelRuntimeBar", () => {
 
     expect(screen.getByText(/Reasoning Effort: High/)).toBeInTheDocument();
     expect(screen.queryByText(/Reasoning Effort: Low/)).not.toBeInTheDocument();
+  });
+
+  it("renders a static badge when no change handler is provided", () => {
+    render(<ModelRuntimeBar settings={settings} />);
+
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.getByText(/Reasoning Effort: High/)).toBeInTheDocument();
+  });
+
+  it("prefers the pending override over the runtime value", () => {
+    render(
+      <ModelRuntimeBar
+        settings={settings}
+        runtimeReasoningEffort="high"
+        effortOverride="low"
+        onEffortChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByText(/Reasoning Effort: Low/)).toBeInTheDocument();
+  });
+
+  it("opens a picker and reports the chosen effort", async () => {
+    const onEffortChange = vi.fn();
+    render(
+      <ModelRuntimeBar
+        settings={settings}
+        runtimeReasoningEffort="high"
+        onEffortChange={onEffortChange}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /Reasoning Effort/i }));
+
+    const menu = screen.getByRole("menu");
+    expect(menu).toBeInTheDocument();
+    // The current value is marked checked for assistive tech.
+    expect(screen.getByRole("menuitemradio", { name: "High" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+
+    await userEvent.click(screen.getByRole("menuitemradio", { name: "Max" }));
+
+    expect(onEffortChange).toHaveBeenCalledWith("max");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("offers the provider default as an empty-string choice", async () => {
+    const onEffortChange = vi.fn();
+    render(<ModelRuntimeBar settings={settings} onEffortChange={onEffortChange} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /Reasoning Effort/i }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: /Provider default/i }));
+
+    expect(onEffortChange).toHaveBeenCalledWith("");
+  });
+
+  it("does not open the picker while disabled", async () => {
+    render(
+      <ModelRuntimeBar
+        settings={settings}
+        onEffortChange={() => {}}
+        disabled
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /Reasoning Effort/i }));
+
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 });

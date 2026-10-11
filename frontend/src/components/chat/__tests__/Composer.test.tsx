@@ -27,6 +27,8 @@ const baseProps = {
   onCancelGoal: vi.fn(),
   onStartSwarm: vi.fn(),
   onCancelSwarm: vi.fn(),
+  onCompact: vi.fn(),
+  compacting: false,
 };
 
 describe("Composer", () => {

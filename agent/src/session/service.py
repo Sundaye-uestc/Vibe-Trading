@@ -307,6 +307,7 @@ class SessionService:
         role: str = "user",
         *,
         include_shell_tools: bool = False,
+        reasoning_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send a message to a session and trigger execution.
 
@@ -315,6 +316,10 @@ class SessionService:
             content: Message content.
             role: Message role.
             include_shell_tools: Whether this attempt may use shell tools.
+            reasoning_effort: Optional per-session override for the reasoning
+                effort (``none``/``low``/``medium``/``high``/``max``, or ``""``
+                for the provider default). ``None`` leaves the stored value
+                untouched so a plain follow-up keeps the last choice.
 
         Returns:
             Dictionary containing message_id and attempt_id.
@@ -349,6 +354,8 @@ class SessionService:
             attempt = Attempt(session_id=session_id, parent_attempt_id=session.last_attempt_id, prompt=content)
             self.store.create_attempt(attempt)
             session.config["include_shell_tools"] = include_shell_tools
+            if reasoning_effort is not None:
+                session.config["reasoning_effort"] = reasoning_effort
             session.last_attempt_id = attempt.attempt_id
             session.updated_at = datetime.now().isoformat()
             self.store.update_session(session)
@@ -390,6 +397,161 @@ class SessionService:
             task.cancel()
             return True
         return False
+
+    async def compact_session(self, session_id: str) -> Dict[str, Any]:
+        """Compress stored history into a handoff summary (non-destructive).
+
+        The original messages stay in the append-only JSONL log; a compaction
+        marker is appended after the folded head, and
+        :meth:`_convert_messages_to_history` replays the summary plus every
+        message after the marker. Deleting the marker (or the whole file's last
+        line) restores the uncompressed view, so this never destroys data.
+
+        Args:
+            session_id: Session whose stored history should be compressed.
+
+        Returns:
+            ``{"status": "compacted"|"noop", ...}`` with token estimates.
+
+        Raises:
+            ValueError: If the session does not exist.
+            SessionBusyError: If a run is already in flight for the session.
+        """
+        session = self.store.get_session(session_id)
+        if session is None:
+            raise ValueError(f"Session {session_id} not found")
+        with self._inflight_lock:
+            if session_id in self._inflight:
+                raise SessionBusyError(
+                    f"Session {session_id} already has a run in progress"
+                )
+
+        messages = self.store.get_messages(session_id, limit=500)
+        # Keep the most recent turns verbatim so the model still sees the tail
+        # it is actively working on; only the head is folded into the summary.
+        keep_tail = 4
+        if len(messages) <= keep_tail + 1:
+            return {
+                "status": "noop",
+                "reason": "history too short to compact",
+            }
+
+        head = messages[:-keep_tail]
+        head_ids = {
+            (m.message_id if hasattr(m, "message_id") else m.get("message_id"))
+            for m in head
+        }
+
+        # Reuse the AgentLoop summarisation prompts so there is exactly one
+        # handoff-summary format in the codebase.
+        from src.agent.loop import (
+            _ITERATIVE_UPDATE_PROMPT,
+            _STRUCTURED_SUMMARY_PROMPT,
+            _summary_chunks,
+        )
+        from src.providers.chat import ChatLLM
+
+        effort_override = None
+        if session.config:
+            raw_effort = session.config.get("reasoning_effort")
+            if isinstance(raw_effort, str):
+                effort_override = raw_effort
+        llm = ChatLLM(reasoning_effort=effort_override)
+
+        def _message_content(msg: Any) -> str:
+            if hasattr(msg, "content"):
+                return msg.content
+            return msg.get("content", "") if isinstance(msg, dict) else ""
+
+        def _message_role(msg: Any) -> str:
+            if hasattr(msg, "role"):
+                return msg.role
+            return msg.get("role", "user") if isinstance(msg, dict) else "user"
+
+        def _message_metadata(msg: Any) -> Dict[str, Any]:
+            if hasattr(msg, "metadata"):
+                metadata = msg.metadata
+            elif isinstance(msg, dict):
+                metadata = msg.get("metadata")
+            else:
+                metadata = None
+            return metadata if isinstance(metadata, dict) else {}
+
+        # If an earlier compaction already folded a prefix, summarise that
+        # summary plus the new turns instead of re-reading the raw prefix.
+        prior_summary = ""
+        serialize: list[Dict[str, Any]] = []
+        for msg in head:
+            metadata = _message_metadata(msg)
+            if metadata.get("type") == "compaction":
+                prior_summary = _message_content(msg)
+                continue
+            content = _message_content(msg)
+            role = _message_role(msg)
+            if content.strip() and role in ("user", "assistant"):
+                serialize.append({"role": role, "content": content})
+
+        if not serialize and not prior_summary:
+            return {"status": "noop", "reason": "nothing to compact"}
+
+        tokens_before = sum(len(m["content"]) for m in serialize) // 4
+        summary = prior_summary
+        loop = asyncio.get_running_loop()
+        for chunk in _summary_chunks(serialize):
+            if summary:
+                prompt = _ITERATIVE_UPDATE_PROMPT.format(
+                    previous_summary=summary,
+                    new_turns=chunk,
+                    focus_section="",
+                )
+            else:
+                prompt = _STRUCTURED_SUMMARY_PROMPT.format(focus_section="") + chunk
+
+            def _run_summary(text: str = prompt) -> Any:
+                return llm.chat([{"role": "user", "content": text}])
+
+            response = await loop.run_in_executor(_AGENT_EXECUTOR, _run_summary)
+            if getattr(response, "content", ""):
+                summary = response.content
+
+        if not summary:
+            return {"status": "noop", "reason": "summarizer returned no content"}
+
+        through_id = None
+        for msg in reversed(head):
+            message_id = msg.message_id if hasattr(msg, "message_id") else msg.get("message_id")
+            if message_id in head_ids and _message_metadata(msg).get("type") != "compaction":
+                through_id = message_id
+                break
+
+        marker = Message(
+            session_id=session_id,
+            role="system",
+            content=summary,
+            metadata={
+                "type": "compaction",
+                "through": through_id,
+                "tokens_before": tokens_before,
+                "compacted_messages": len(serialize),
+            },
+        )
+        self.store.append_message(marker)
+        self._search_index.index_message(session_id, "system", summary)
+        self.event_bus.emit(
+            session_id,
+            "compact",
+            {
+                "message_id": marker.message_id,
+                "compacted_messages": len(serialize),
+                "tokens_before": tokens_before,
+            },
+        )
+        return {
+            "status": "compacted",
+            "message_id": marker.message_id,
+            "tokens_before": tokens_before,
+            "compacted_messages": len(serialize),
+        }
 
     async def _run_attempt(self, session: Session, attempt: Attempt, *, include_shell_tools: bool = False) -> None:
         """Execute an Attempt in the background.
@@ -545,7 +707,22 @@ class SessionService:
         from src.memory.persistent import PersistentMemory
         from src.config.loader import load_runtime_agent_config, sanitize_session_overrides
 
-        llm = ChatLLM()
+        # A per-session effort override rides in session.config (set by
+        # send_message). Absent/None keeps the env default, so the field only
+        # takes effect once a caller explicitly picks an effort.
+        effort_override = None
+        if session_config:
+            raw_effort = session_config.get("reasoning_effort")
+            if isinstance(raw_effort, str):
+                effort_override = raw_effort
+        # Only pass the kwarg when a choice was actually made: a no-argument
+        # ChatLLM() is the historical call shape, and stubs/tests that patch
+        # the class with a zero-arg factory must keep working.
+        llm = (
+            ChatLLM(reasoning_effort=effort_override)
+            if effort_override is not None
+            else ChatLLM()
+        )
         pm = PersistentMemory()
 
         session_id = attempt.session_id
@@ -728,10 +905,46 @@ class SessionService:
             run_id = Path(path_str).name if path_str else ""
             return f"[prev_run: {run_id}]" if run_id else ""
 
+        def _role(msg: Any) -> str:
+            if hasattr(msg, "role"):
+                return msg.role
+            return msg.get("role", "user") if isinstance(msg, dict) else "user"
+
+        def _content(msg: Any) -> str:
+            if hasattr(msg, "content"):
+                return msg.content
+            return msg.get("content", "") if isinstance(msg, dict) else ""
+
+        def _metadata(msg: Any) -> Dict[str, Any]:
+            if hasattr(msg, "metadata"):
+                metadata = msg.metadata
+            elif isinstance(msg, dict):
+                metadata = msg.get("metadata")
+            else:
+                metadata = None
+            return metadata if isinstance(metadata, dict) else {}
+
+        # ``messages`` includes the current turn as its last element; the prompt
+        # is passed separately, so the history stops before it.
+        body = messages[:-1]
+
+        # Honour the newest compaction marker: the head it folded is represented
+        # by the summary that follows it, so the replay window starts there.
+        compact_at = -1
+        for idx, msg in enumerate(body):
+            if _metadata(msg).get("type") == "compaction":
+                compact_at = idx
+        if compact_at >= 0:
+            leading = body[compact_at + 1:]
+            summary = _content(body[compact_at]).strip()
+        else:
+            leading = body
+            summary = ""
+
         history = []
-        for msg in messages[:-1]:
-            role = msg.role if hasattr(msg, "role") else msg.get("role", "user")
-            content = msg.content if hasattr(msg, "content") else msg.get("content", "")
+        for msg in leading:
+            role = _role(msg)
+            content = _content(msg)
             if not content.strip() or role not in ("user", "assistant"):
                 continue
             content = re.sub(r"Run directory:\s*\S+", _shorten_run_dir, content).strip()
@@ -755,7 +968,23 @@ class SessionService:
             if not trimmed:
                 trimmed.append({**msg, "content": content[:remaining] + "\n[... truncated]"})
             break
-        return list(reversed(trimmed))
+        replayed = list(reversed(trimmed))
+        if summary:
+            # The summary is the oldest entry and would be the first thing the
+            # newest-first trim drops; pin it ahead of the trimmed tail so a
+            # compaction survives the budget it was created to relieve.
+            replayed.insert(
+                0,
+                {
+                    # A "user" block mirrors AgentLoop._auto_compact's rebuild,
+                    # which keeps the handoff out of the system slot so
+                    # providers that only tolerate one leading system message
+                    # still accept the replay.
+                    "role": "user",
+                    "content": f"[Conversation compressed — handoff summary]\n\n{summary}",
+                },
+            )
+        return replayed
 
     @staticmethod
     def _load_metrics(run_dir: Path) -> Optional[Dict[str, Any]]:

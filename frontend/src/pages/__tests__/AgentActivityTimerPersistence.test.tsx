@@ -16,6 +16,7 @@ const apiMock = vi.hoisted(() => ({
   getGoal: vi.fn(),
   getLLMSettings: vi.fn(),
   getRun: vi.fn(),
+  getSession: vi.fn(() => Promise.resolve({})),
   getSessionMessages: vi.fn(),
   sseUrl: vi.fn((sid: string) => `/sessions/${sid}/events`),
 }));

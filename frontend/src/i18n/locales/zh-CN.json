@@ -599,6 +599,11 @@
   },
   "agent": {
     "reasoningStrength": "推理强度",
+    "compactContext": "压缩上下文",
+    "compactingContext": "正在压缩…",
+    "contextCompacted": "上下文已压缩",
+    "nothingToCompact": "暂无可压缩的内容",
+    "compactFailed": "压缩上下文失败",
     "unknownProvider": "未知提供商",
     "unknownModel": "未知模型",
     "connectionLostReconnect": "连接已断开，正在重连…",

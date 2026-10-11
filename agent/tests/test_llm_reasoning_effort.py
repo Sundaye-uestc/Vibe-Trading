@@ -571,6 +571,65 @@ class TestRequestPayload:
         assert kwargs["use_responses_api"] is False
         assert kwargs["reasoning_effort"] == "none"
 
+    def test_build_llm_per_call_effort_overrides_the_environment(self) -> None:
+        """The chat picker's value must win over LANGCHAIN_REASONING_EFFORT."""
+        captured: dict[str, Any] = {}
+
+        class _FakeChatOpenAI:
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+        with patch.dict(
+            os.environ,
+            {
+                "LANGCHAIN_PROVIDER": "openai",
+                "OPENAI_API_KEY": "sk-test",
+                "LANGCHAIN_MODEL_NAME": "gpt-5.6-sol",
+                "LANGCHAIN_REASONING_EFFORT": "high",
+            },
+            clear=True,
+        ):
+            with patch.object(llm_mod, "ChatOpenAIWithReasoning", _FakeChatOpenAI):
+                build_llm(reasoning_effort="low")
+
+        assert captured["reasoning_effort"] == "low"
+
+    def test_build_llm_per_call_empty_effort_clears_the_environment(self) -> None:
+        """"" is an explicit provider default, not "inherit the env value"."""
+        captured: dict[str, Any] = {}
+
+        class _FakeChatOpenAI:
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+        with patch.dict(
+            os.environ,
+            {
+                "LANGCHAIN_PROVIDER": "openai",
+                "OPENAI_API_KEY": "sk-test",
+                "LANGCHAIN_MODEL_NAME": "gpt-5.6-sol",
+                "LANGCHAIN_REASONING_EFFORT": "high",
+            },
+            clear=True,
+        ):
+            with patch.object(llm_mod, "ChatOpenAIWithReasoning", _FakeChatOpenAI):
+                build_llm(reasoning_effort="")
+
+        assert captured["reasoning_effort"] is None
+
+    def test_build_llm_none_effort_keeps_the_environment_value(self) -> None:
+        """Existing callers that pass no override must keep the env behaviour."""
+        kwargs = _capture_kwargs(
+            {
+                "LANGCHAIN_PROVIDER": "openai",
+                "OPENAI_API_KEY": "sk-test",
+                "LANGCHAIN_MODEL_NAME": "gpt-5.6-sol",
+                "LANGCHAIN_REASONING_EFFORT": "high",
+            }
+        )
+
+        assert kwargs["reasoning_effort"] == "high"
+
 
 class TestResponsesAPI:
     def test_reasoning_effort_defaults_to_chat_completions(self) -> None:

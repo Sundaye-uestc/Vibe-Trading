@@ -610,6 +610,11 @@
   },
   "agent": {
     "reasoningStrength": "추론 강도",
+    "compactContext": "컨텍스트 압축",
+    "compactingContext": "압축 중…",
+    "contextCompacted": "컨텍스트가 압축되었습니다",
+    "nothingToCompact": "압축할 내용이 없습니다",
+    "compactFailed": "컨텍스트를 압축하지 못했습니다",
     "unknownProvider": "알 수 없는 제공자",
     "unknownModel": "알 수 없는 모델",
     "connectionLostReconnect": "연결이 끊겼습니다. 재연결 중…",

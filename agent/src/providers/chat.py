@@ -330,22 +330,37 @@ class ChatLLM:
         model_name: Model name.
     """
 
-    def __init__(self, model_name: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> None:
         """Initialize ChatLLM.
 
         Args:
             model_name: Model name; defaults to the environment variable value.
+            reasoning_effort: Optional per-call override for
+                ``LANGCHAIN_REASONING_EFFORT``.  ``None`` inherits the
+                environment value so existing callers are unchanged.
         """
-        self._llm = build_llm(model_name=model_name)
+        self._llm = build_llm(
+            model_name=model_name,
+            reasoning_effort=reasoning_effort,
+        )
         runtime_cfg = get_env_config().llm
         configured_model = (
             model_name or runtime_cfg.langchain_model_name
         ).strip()
         self.model_name = configured_model
+        effective_effort = (
+            reasoning_effort.strip().lower()
+            if isinstance(reasoning_effort, str)
+            else runtime_cfg.langchain_reasoning_effort.strip().lower()
+        )
         self.runtime_snapshot = LLMRuntimeSnapshot(
             provider=runtime_cfg.langchain_provider.strip().lower() or "openai",
             configured_model=configured_model,
-            reasoning_effort=runtime_cfg.langchain_reasoning_effort.strip().lower(),
+            reasoning_effort=effective_effort,
         )
 
     def close(self) -> None:

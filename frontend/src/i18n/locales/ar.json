@@ -610,6 +610,11 @@
   },
   "agent": {
     "reasoningStrength": "جهد الاستدلال",
+    "compactContext": "ضغط السياق",
+    "compactingContext": "جارٍ الضغط…",
+    "contextCompacted": "تم ضغط السياق",
+    "nothingToCompact": "لا يوجد ما يمكن ضغطه",
+    "compactFailed": "تعذّر ضغط السياق",
     "unknownProvider": "مزوّد غير معروف",
     "unknownModel": "نموذج غير معروف",
     "connectionLostReconnect": "فُقد الاتصال، جارٍ إعادة الاتصال…",

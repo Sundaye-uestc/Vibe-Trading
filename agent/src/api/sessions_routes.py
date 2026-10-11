@@ -40,11 +40,20 @@ class SessionResponse(BaseModel):
     created_at: str
     updated_at: str
     last_attempt_id: Optional[str] = None
+    reasoning_effort: Optional[str] = None
 
 
 class SendMessageRequest(BaseModel):
     """Send chat message: natural-language strategy description."""
     content: str = Field(..., description="Natural language strategy description", min_length=1, max_length=5000)
+    reasoning_effort: Optional[str] = Field(
+        None,
+        description=(
+            "Optional per-session reasoning effort override: none / low / "
+            "medium / high / max, or \"\" for the provider default. Omitted "
+            "keeps the value stored on the session."
+        ),
+    )
 
 
 class MessageResponse(BaseModel):
@@ -390,6 +399,7 @@ def register_sessions_routes(app: FastAPI) -> None:
             created_at=session.created_at,
             updated_at=session.updated_at,
             last_attempt_id=session.last_attempt_id,
+            reasoning_effort=session.config.get("reasoning_effort"),
         )
 
     @app.get("/sessions", response_model=List[SessionResponse], dependencies=[Depends(require_auth)])
@@ -407,6 +417,7 @@ def register_sessions_routes(app: FastAPI) -> None:
                 created_at=s.created_at,
                 updated_at=s.updated_at,
                 last_attempt_id=s.last_attempt_id,
+                reasoning_effort=s.config.get("reasoning_effort"),
             )
             for s in sessions
         ]
@@ -428,6 +439,7 @@ def register_sessions_routes(app: FastAPI) -> None:
             created_at=session.created_at,
             updated_at=session.updated_at,
             last_attempt_id=session.last_attempt_id,
+            reasoning_effort=session.config.get("reasoning_effort"),
         )
 
     # -----------------------------------------------------------------------
@@ -737,11 +749,20 @@ def register_sessions_routes(app: FastAPI) -> None:
         svc = _host_get_session_service()
         if not svc:
             raise HTTPException(status_code=501, detail="Session runtime not enabled")
+        reasoning_effort = payload.reasoning_effort
+        if reasoning_effort is not None:
+            reasoning_effort = reasoning_effort.strip().lower()
+            if reasoning_effort not in {"", "none", "low", "medium", "high", "max"}:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Reasoning effort must be none, low, medium, high, or max",
+                )
         try:
             result = await svc.send_message(
                 session_id=session_id,
                 content=payload.content,
                 include_shell_tools=_host_shell_tools_enabled_for_request(http_request),
+                reasoning_effort=reasoning_effort,
             )
             return result
         except SessionBusyError as exc:
@@ -762,6 +783,24 @@ def register_sessions_routes(app: FastAPI) -> None:
         if not cancelled:
             return {"status": "no_active_loop"}
         return {"status": "cancelled"}
+
+    @app.post("/sessions/{session_id}/compact", dependencies=[Depends(require_auth)])
+    async def compact_session(session_id: str):
+        """Compress the stored conversation into a handoff summary.
+
+        Non-destructive: the original messages stay in the append-only log and
+        a marker is appended, so the compressed view can be reverted.
+        """
+        _host_validate_path_param(session_id, "session_id")
+        svc = _host_get_session_service()
+        if not svc:
+            raise HTTPException(status_code=501, detail="Session runtime not enabled")
+        try:
+            return await svc.compact_session(session_id)
+        except SessionBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
 
     @app.get("/sessions/{session_id}/messages", response_model=List[MessageResponse], dependencies=[Depends(require_auth)])
     async def get_messages(session_id: str, limit: int = Query(100, ge=1, le=1000)):

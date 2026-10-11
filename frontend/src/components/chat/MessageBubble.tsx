@@ -1,6 +1,6 @@
 import i18n from '@/i18n';
 import { Component, memo, useState, useEffect, useCallback, type ReactNode } from "react";
-import { User, XCircle, RefreshCw, Copy, Check, Paperclip, Users, Target, Clock3 } from "lucide-react";
+import { User, XCircle, RefreshCw, Copy, Check, Paperclip, Users, Target, Clock3, Minimize2 } from "lucide-react";
 import ReactMarkdown, { type Options as ReactMarkdownOptions } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -298,6 +298,24 @@ export const MessageBubble = memo(function MessageBubble({ msg, onRetry }: Props
 
   if (msg.type === "run_complete" && msg.runId) {
     return <RunCompleteCard msg={msg} />;
+  }
+
+  if (msg.type === "compact") {
+    return (
+      <div className="flex items-center gap-3" role="separator">
+        <span className="h-px flex-1 bg-border/70" />
+        <details className="group shrink-0">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-full border border-border/70 bg-muted/35 px-2.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+            <Minimize2 className="h-3 w-3" aria-hidden="true" />
+            {i18n.t("agent.contextCompacted" as never)}
+          </summary>
+          <div className="mt-2 max-h-64 overflow-y-auto rounded-lg border bg-muted/20 p-3 text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap">
+            {msg.content}
+          </div>
+        </details>
+        <span className="h-px flex-1 bg-border/70" />
+      </div>
+    );
   }
 
   if (msg.type === "error") {

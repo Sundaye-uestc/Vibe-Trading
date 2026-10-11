@@ -610,6 +610,11 @@
   },
   "agent": {
     "reasoningStrength": "Reasoning-Aufwand",
+    "compactContext": "Kontext komprimieren",
+    "compactingContext": "Wird komprimiert…",
+    "contextCompacted": "Kontext komprimiert",
+    "nothingToCompact": "Noch nichts zu komprimieren",
+    "compactFailed": "Kontext konnte nicht komprimiert werden",
     "unknownProvider": "Unbekannter Anbieter",
     "unknownModel": "Unbekanntes Modell",
     "connectionLostReconnect": "Verbindung verloren, wird neu verbunden…",

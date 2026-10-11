@@ -8,6 +8,11 @@
 > **O-1** 已按你的决定处理：8 个孤儿索引行直接删除（删除前留了一致性快照），未从备份恢复会话；
 > **O-3** 的残留目录已不存在，无需动作。
 > 第三节的验证项已跑完，结果见该节末尾。
+>
+> **2026-09-29 更新**：新增第五节「A 股数据源现状与待办」——逐源实测结论、
+> Tushare 积分门槛（**需你操作**）、eastmoney/akshare 被主机侧拒绝、
+> mootdx 上游协议不兼容的完整排查与回退记录。
+> 同时把本轮的两处代码修复（引擎时间轴、grounding 日期校验）补进第四节。
 
 ## 一、待修复（按优先级）
 
@@ -194,3 +199,89 @@
 | `/skills` 页面刷新返回 JSON 而非页面 | `frontend/vite.config.ts`（按 `Accept` 分流） |
 | 相同参数的只读取数被反复执行 | `src/agent/tools.py`（`cache_ttl`）、`src/agent/loop.py`（TTL 生效）、10 个数据工具标注 |
 | 压缩窗口不可调 | `src/agent/loop.py`（`VIBE_TRADING_KEEP_RECENT_TOOL_RESULTS`，默认不变） |
+| 回测产物时间戳全部落在 1970，成交被逐笔拒绝（`no_bar`） | `backtest/engines/base.py`（`_align` 不再用 `index.asi8` 求并集——pandas 3 的微秒被 `pd.DatetimeIndex` 当纳秒解释；改为合并 datetime64 值本身，并在两处 `searchsorted` 用 `as_unit(dates.unit)` 对齐两侧单位） |
+| `rebalance_mask` 显式日期选不到任何 bar | `backtest/rebalance_mask.py`（`bounds` 改用 `dates.as_unit("ns").asi8`，与恒为纳秒的 `Timestamp.value` / `offset.nanos` 同单位） |
+| 表格里加粗的日期单元格使整行价格被判「无工具证据」 | `src/agent/grounding.py`（`_strip_emphasis` 剥离 Markdown 强调标记；新增 `_DASH_DATE_PAIR_RE` 屏蔽 `08-17/08-27`；补 `last_close` 价格别名） |
+
+## 五、A 股数据源现状与待办（2026-09-29 实测）
+
+链路定义在 `backtest/loaders/registry.py` 的 `FALLBACK_CHAINS["a_share"]`：
+
+```
+tencent → mootdx → eastmoney → baostock → akshare → tushare → local
+```
+
+对每个源真实拉取 `600522.SH`（2026-09-14 → 09-29）后的结论：
+
+| 源 | 实测 | 说明 |
+|---|---|---|
+| `tencent` | **可用** | 10 行，09-28 收 31.32 |
+| `baostock` | **可用** | 与 tencent 逐日数值完全一致 |
+| `tushare` | **token 已就位，账号权限不足** | 见 T-1 |
+| `eastmoney` | **被拒** | 见 D-1 |
+| `akshare` | **被拒** | A 股路径与 eastmoney 同主机，见 D-1 |
+| `mootdx` | **不可用（已回退卸载）** | 见 D-2 |
+| `sina` | **返回空** | 无异常、0 行；根因未查 |
+
+净结果：日常回测不受影响（`tencent` 在链首且正常），但**目前没有可信的交叉验证第二来源**。
+
+> **2026-10-11 补充**：上一轮为移除 mootdx 而卸载了 `py-mini-racer`，但该包是 akshare 的
+> 依赖（`akshare/air/air_zhenqi.py` 需要 `MiniRacer`），且卸载后残留的空目录被 Python 当成
+> 命名空间包，于是 `import akshare` 直接抛 `ImportError`——比 D-1 的「被拒」更彻底：akshare
+> 源当前**完全不可用**，`tests/test_akshare_loader.py::TestIsForex::test_eurusd_matches`
+> 因此失败。修法：`pip install py-mini-racer` 即可恢复。
+
+### T-1 Tushare token 已配置，但账号缺 120 积分（**需你操作**）
+
+- **现象**：token 写入 `~/.vibe-trading/.env`（第 20 行）与 `agent/.env`（第 29 行）后，
+  调用返回 `抱歉，您没有接口(daily)访问权限`（`daily` 与 `trade_cal` 均如此）。
+- **判定依据**：该报错是**权限**错误而非认证错误——无效 token 会返回「您的token不对，请确认」。
+  说明 token 有效、账号已认证，只是积分不足。`daily` / `trade_cal` 门槛为 **120 积分**，
+  新注册账号为 0 积分。
+- **建议动作**：登录 [tushare.pro](https://tushare.pro) → 个人主页 → **完善个人信息**，
+  免费获得 120 积分，`daily` 即解锁；**之后无需再改任何配置**。
+- **注意**：`src/preflight.py:213` 的 `_check_tushare` 只校验「token 非空且非占位符」，
+  不验证接口权限，所以预检会显示 `OK — token configured`，这个绿色是**虚的**。
+- **环境变量优先级**：`src/providers/llm.py:1229` 按
+  `~/.vibe-trading/.env` → `agent/.env` → `cwd/.env` 顺序加载且 `override=False`，先到先得。
+  （本轮首次写入时曾用 `re.subn` 只替换正则前缀，把占位符尾巴 `your-tushare-token` 留在行内，
+  导致 `agent/.env` 的值变成 74 字符；已改为整行替换并复核为 56 字符。）
+
+### D-1 eastmoney / akshare 被主机侧拒绝（确认与代理无关）
+
+- **现象**：`push2his.eastmoney.com` 返回
+  `RemoteDisconnected('Remote end closed connection without response')`，连续 3 次复现。
+- **排除代理**：Windows 系统代理已开启（`127.0.0.1:7897`，`urllib.request.getproxies()` 可见），
+  但**走代理与显式绕过代理（`Session.trust_env = False`）得到同样的 `RemoteDisconnected`**；
+  且 `Find-NetRoute` 显示访问 TDX/东财时走 **WLAN 直连（ifIndex 16）**，未经 TAP/VPN 网卡。
+- **根因推断**：`backtest/loaders/_http.py` 模块文档即写明该源「按源 IP 限流、突发请求会被临时封禁」，
+  与现象吻合。首次探测时曾成功返回一次（09-28 收 31.32），之后持续被拒。
+- **影响**：`akshare` 的 A 股路径同样走该主机，因此两者一起失效。
+- **建议动作**：等待封禁自然解除（可用 `_http.py` 的 `*_MIN_INTERVAL` 环境变量降低突发频率）；
+  长期由 T-1 的 tushare 补位。
+
+### D-2 mootdx 上游协议不兼容（已尝试并回退）
+
+- **依赖陷阱**：`mootdx` 要求 `httpx<0.26.0` / `tenacity<9.0.0`，而本 venv 是 `httpx 0.28.1`
+  （被 `openai`、`mcp`、`langsmith`、`langgraph-sdk`、`vibe-trading-ai` 依赖）与 `tenacity 9.1.4`
+  （被 `langchain-core` 依赖）。**常规安装会连带降级整个 LLM 栈**，只能用 `--no-deps`。
+- **Python 3.14 崩溃**：`python -m mootdx bestip` 直接失败——它走 asyncio 路径调用
+  `asyncio.get_event_loop()`，该「隐式取当前事件循环」的行为在 3.14 已移除；
+  改用 `mootdx.server.bestip(sync=True)` 才能选服务器并写入配置。
+- **根因在上游**：配置完成后，`bars()` 对 6 台可达 TDX 服务器**全部返回 0 行**；
+  绕过 mootdx 直接用 tdxpy 验证：`get_security_count` 返回 **24281**（握手成功、协议帧正常），
+  但 `get_security_bars` / `get_security_quotes` 全空。`mootdx 0.11.7` 与 `tdxpy 0.2.7`
+  均已是**最新版**，且 TDX 流量未经过代理。
+  → tdxpy 的响应解析与当前通达信服务器协议不兼容，**项目侧无法修复**。
+- **当前状态**：已 `pip uninstall` 回退（`mootdx` / `tdxpy` / `prettytable` / `py-mini-racer`）
+  并删除 `~/.mootdx/`；`httpx` / `tenacity` / `pandas` 均复原。
+  之所以回退而非保留：装上游标表会把一个**取不到数据**的源当作「可用」插在链路第 2 位
+  （`baostock` 之前），只在 `tencent` 失效时才暴露，属于净负面改动。
+- **将来若 tdxpy 修复协议**，重新安装即可：
+  `pip install --no-deps mootdx tdxpy prettytable py-mini-racer`，再跑 `bestip(sync=True)`。
+
+### D-3 附带确认：中天科技 09-28 收 31.32（跌停）
+
+- `tencent` 与 `baostock` 两条路径一致返回 `2026-09-28 close = 31.32`；
+  与 `eastmoney` 首次成功那一次的单点值也相同 → **三处吻合**。
+- 相对 09-24 的 34.80 为 **-10.0%**，即 A 股主板跌停。此前存疑的数字至此证实。

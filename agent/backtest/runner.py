@@ -1,7 +1,8 @@
 """Fixed backtest entrypoint: read config.json, select loader by source, import signal_engine, run engine.
 
 Supports ``source="auto"`` to route codes to loaders by symbol format.
-Supports ``interval`` for bar size (1m/5m/15m/30m/1H/4H/1D, default 1D).
+Supports ``interval`` for bar size (1m/5m/15m/30m/1H/4H/1D/1W/1M, default 1D;
+1W and 1M are built from daily bars).
 Supports ``engine`` for backtest engine (daily/options, default daily).
 
 Usage: ``python -m backtest.runner <run_dir>``
@@ -30,7 +31,12 @@ from backtest.loaders.registry import (
     price_caliber,
     resolve_loader,
 )
-from backtest.loaders.base import NoAvailableSourceError, validate_ohlc
+from backtest.loaders.base import (
+    NoAvailableSourceError,
+    resample_bars,
+    source_interval,
+    validate_ohlc,
+)
 # Symbol classification lives in ``_market_hooks`` so runner.py and
 # composite.py share a single source of truth (audit-2026-05-18 B1+C1+C2).
 # ``_detect_market`` is also re-exported here for back-compat with
@@ -45,7 +51,7 @@ from backtest.rebalance_mask import RebalanceMask, validate_rebalance_mask
 
 logger = logging.getLogger(__name__)
 
-_VALID_INTERVALS = {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
+_VALID_INTERVALS = {"1m", "5m", "15m", "30m", "1H", "4H", "1D", "1W", "1M"}
 _VALID_ENGINES = {"daily", "options"}
 _PRICE_PANEL_COLUMNS = ("open", "high", "low", "close", "volume", "vwap", "amount")
 _FUND_PREFIX = "fund:"
@@ -1523,7 +1529,10 @@ def fetch_data_map(config: dict) -> DataFetchResult:
     config = copy.deepcopy(config)
     source = str(config.get("source") or "tushare")
     codes = list(config.get("codes") or [])
-    interval = str(config.get("interval") or "1D")
+    requested_interval = str(config.get("interval") or "1D")
+    # Loaders are consistently asked for daily bars; period bars are built at
+    # this boundary so every source has identical week/month semantics.
+    interval = source_interval(requested_interval)
 
     caliber_stamps: dict[str, tuple[str, str]] = {}
     if source == "auto":
@@ -1623,6 +1632,10 @@ def fetch_data_map(config: dict) -> DataFetchResult:
             )
 
     data_map = _sanitize_data_map(data_map)
+    data_map = {
+        code: resample_bars(frame, requested_interval)
+        for code, frame in data_map.items()
+    }
     caliber_stamps = {
         code: stamp for code, stamp in caliber_stamps.items() if code in data_map
     }

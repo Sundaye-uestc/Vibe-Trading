@@ -177,7 +177,18 @@ _NO_NETWORK_FALLBACK_SOURCES: frozenset[str] = frozenset(
 # that must be politely throttled; Finnhub/AlphaVantage/Tiingo/FMP are key-gated
 # REST fallbacks placed deeper in the chain.
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "a_share":   ["tencent", "mootdx", "eastmoney", "baostock", "akshare", "tushare", "local"],
+    "a_share": [
+        "tencent",
+        # mootdx retired from the automatic chain in 2026-10: TDX quote
+        # servers stopped answering the mootdx/tdxpy protocol (mootdx#157).
+        # Keep the loader registered for explicit source="mootdx" requests,
+        # but do not spend the fallback timeout on every A-share fetch.
+        "eastmoney",
+        "baostock",
+        "akshare",
+        "tushare",
+        "local",
+    ],
     "us_equity": ["yahoo", "stooq", "sina", "eastmoney", "yfinance", "tiingo", "fmp", "finnhub", "alphavantage", "longbridge", "akshare", "local"],
     # HK: tencent leads (no observed IP ban); akshare (Eastmoney-backed)
     # precedes the Yahoo-SDK family, which is blocked from mainland IPs;
@@ -303,7 +314,7 @@ def mixed_caliber_warning(stamps: dict[str, tuple[str, str]]) -> str | None:
 # Users can reprioritize a market's chain via one env var per market
 # (persisted to ~/.vibe-trading/.env by the Settings page's "source
 # priority" card):
-#     MARKET_DATA_ORDER_A_SHARE=tushare,tencent,mootdx,...
+#     MARKET_DATA_ORDER_A_SHARE=tushare,tencent,eastmoney,...
 # The value must be a permutation of the market's default chain —
 # reordering is allowed, adding/dropping sources is not. Invalid values
 # warn and keep the default chain, so a typo can never silently strip a

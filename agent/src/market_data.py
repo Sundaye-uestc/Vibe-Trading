@@ -9,6 +9,8 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+import pandas as pd
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ROWS = 250
@@ -203,7 +205,7 @@ def fetch_market_data(
     consumers must read this field instead of assuming a unit.
     """
     from backtest.engines._market_hooks import _detect_market
-    from backtest.loaders.base import NoAvailableSourceError
+    from backtest.loaders.base import NoAvailableSourceError, resample_bars, source_interval
     from backtest.loaders.registry import (
         FALLBACK_CHAINS,
         _NO_NETWORK_FALLBACK_SOURCES,
@@ -315,7 +317,20 @@ def fetch_market_data(
                 continue
             try:
                 loader = loader_cls()
-                partial = loader.fetch(remaining, start_date, end_date, interval=interval)
+                # Weekly/monthly bars are built from daily bars at this
+                # boundary, keeping all loader sources consistent.
+                partial = loader.fetch(
+                    remaining,
+                    start_date,
+                    end_date,
+                    interval=source_interval(interval),
+                )
+                partial = {
+                    code: resample_bars(frame, interval)
+                    if isinstance(frame, pd.DataFrame)
+                    else frame
+                    for code, frame in (partial or {}).items()
+                }
             except Exception as exc:  # noqa: BLE001 — contained per-symbol fallback
                 logger.error(
                     "market-data loader %r failed for %s; trying next source in chain: %s",

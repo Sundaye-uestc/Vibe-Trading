@@ -44,6 +44,10 @@ _TRADING_DAYS = {
     # Korean equity (KRX)
     "pykrx": 252,
 }
+
+# Calendar-period bars have one bar per calendar period regardless of the
+# market's trading-day calendar.
+_CALENDAR_BARS_PER_YEAR = {"1W": 52, "1M": 12}
 # mt5 is a forex/CFD feed: 24x5 sessions → 260 trading days, 24h intraday bars.
 # US equity (yfinance-style): 6.5h sessions → 390 1m bars/day.
 # A-share equity (tushare-style): 4.0h sessions → 240 1m bars/day.
@@ -151,11 +155,17 @@ def _normalize_interval(interval: str) -> str:
     after the interval-map fixes; annualisation must too.
     """
     token = str(interval or "1D").strip()
+    # Match the monthly token before folding case: ``1M`` is one month while
+    # lowercase ``1m`` is one minute.
+    if token == "1M":
+        return token
     lower = token.lower()
     if lower in ("1m", "5m", "15m", "30m"):
         return lower
     if lower in ("1h", "4h", "1d"):
         return lower.upper()
+    if lower == "1w":
+        return "1W"
     return token
 
 
@@ -172,6 +182,8 @@ def calc_bars_per_year(interval: str = "1D", source: str = "tushare") -> int:
         Bars per year.
     """
     interval_key = _normalize_interval(interval)
+    if interval_key in _CALENDAR_BARS_PER_YEAR:
+        return _CALENDAR_BARS_PER_YEAR[interval_key]
     source_key = str(source or "").strip().lower()
     source_key = _SOURCE_ALIASES.get(source_key, source_key)
     trading_days = _TRADING_DAYS.get(source_key, 252)

@@ -165,7 +165,7 @@ class TestFallbackChains:
         """Equity chains lead with throttle-tolerant public sources and trail
         with key-gated REST fallbacks, in the exact reviewed order."""
         assert FALLBACK_CHAINS["a_share"] == [
-            "tencent", "mootdx", "eastmoney", "baostock", "akshare", "tushare", "local",
+            "tencent", "eastmoney", "baostock", "akshare", "tushare", "local",
         ]
         assert FALLBACK_CHAINS["us_equity"] == [
             "yahoo", "stooq", "sina", "eastmoney", "yfinance", "tiingo", "fmp",
@@ -186,6 +186,13 @@ class TestFallbackChains:
     def test_a_share_includes_baostock(self) -> None:
         """'baostock' must remain a reachable A-share fallback."""
         assert "baostock" in FALLBACK_CHAINS["a_share"]
+
+    def test_mootdx_stays_explicit_only(self) -> None:
+        """TDX protocol retirement removes mootdx from auto fallback while
+        preserving explicit source="mootdx" compatibility."""
+        _ensure_registered()
+        assert "mootdx" not in FALLBACK_CHAINS["a_share"]
+        assert "mootdx" in LOADER_REGISTRY
 
     def test_unchanged_chains_preserved(self) -> None:
         """crypto/fund/macro/forex chains must be left untouched."""

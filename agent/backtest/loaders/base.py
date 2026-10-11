@@ -18,7 +18,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Callable, Protocol, TypeVar, runtime_checkable
+from typing import Any, Callable, Protocol, TypeVar, runtime_checkable
 
 import pandas as pd
 
@@ -206,6 +206,61 @@ def validate_ohlc(
 
 DEFAULT_BACKOFF: tuple[float, ...] = (0.5, 1.5, 4.0)
 DEFAULT_MAX_RETRIES = 3
+
+
+# Calendar-period bars are deliberately built from daily bars.  Upstream
+# providers disagree on week boundaries and adjustment rules, while most do
+# not serve these intervals at all.  Resampling here keeps the result
+# consistent regardless of which daily source supplied the data.
+RESAMPLED_INTERVALS = {"1W": "W-SUN", "1M": "M"}
+_SUMMED_COLUMNS = frozenset({"volume", "amount"})
+
+
+def source_interval(interval: str) -> str:
+    """Return the interval requested from a loader for a caller interval."""
+    return "1D" if interval in RESAMPLED_INTERVALS else interval
+
+
+def resample_bars(frame: pd.DataFrame, interval: str) -> pd.DataFrame:
+    """Aggregate daily OHLCV bars into weekly or calendar-month bars.
+
+    A bar is stamped with the last source timestamp in its period.  OHLCV
+    columns use normal candle aggregation; level columns take the last value,
+    funding rates are averaged, and VWAP is weighted by volume when available.
+    Unknown intervals return the original frame unchanged.
+    """
+    if interval not in RESAMPLED_INTERVALS or frame.empty:
+        return frame
+    index = pd.DatetimeIndex(frame.index)
+    naive = index.tz_localize(None) if index.tz is not None else index
+    periods = naive.to_period(RESAMPLED_INTERVALS[interval])
+    grouped = frame.groupby(periods)
+    columns: dict[str, Any] = {}
+    for column in frame.columns:
+        values = grouped[column]
+        if column == "open":
+            columns[column] = values.first()
+        elif column == "high":
+            columns[column] = values.max()
+        elif column == "low":
+            columns[column] = values.min()
+        elif column in _SUMMED_COLUMNS:
+            columns[column] = values.sum(min_count=1)
+        elif column == "funding_rate":
+            columns[column] = values.mean()
+        elif column == "vwap":
+            if "volume" in frame.columns:
+                traded = (frame["vwap"] * frame["volume"]).groupby(periods).sum(min_count=1)
+                columns[column] = traded / grouped["volume"].sum(min_count=1)
+            else:
+                columns[column] = values.first() * float("nan")
+        else:
+            columns[column] = values.last()
+    out = pd.DataFrame(columns, columns=frame.columns)
+    stamps = pd.Series(index, index=periods).groupby(level=0).max()
+    out.index = pd.DatetimeIndex(stamps.loc[out.index], name=frame.index.name)
+    out.attrs = dict(frame.attrs)
+    return out
 
 
 def positive_env_int(name: str, default: int) -> int:

@@ -1,8 +1,14 @@
 ---
 name: mootdx
 category: data-source
-description: Mootdx A-share market data via TCP-direct 通达信 servers. Free, no API key, no IP rate limits. Use as the stable A-share OHLCV fallback when akshare's East Money scrape is throttled.
+description: Mootdx A-share market data via TCP-direct 通达信 servers. Retired from the automatic fallback chain in 2026-10; use only with an explicit `source="mootdx"` request.
 ---
+
+> **Status (2026-10-08): explicit-only.** TDX quote servers stopped answering
+> the mootdx/tdxpy client protocol (mootdx/mootdx#157), so this loader was
+> removed from the automatic A-share fallback chain. It remains registered for
+> explicit requests in case a compatible upstream fork restores the protocol.
+> For automatic A-share OHLCV use tencent, eastmoney, baostock, or akshare.
 
 ## Overview
 
@@ -71,7 +77,10 @@ df_15m = client.bars(symbol="600519", frequency=1, offset=800)
 
 ## Built-in Loader
 
-`backtest/loaders/mootdx_loader.py` is registered as the `mootdx` source. Fallback chain for `a_share` is `[tushare, mootdx, akshare]` — tushare wins when a token is present; mootdx wins when no token but TCP egress works; akshare is the broadest fallback.
+`backtest/loaders/mootdx_loader.py` remains registered as the `mootdx` source,
+but is no longer in the automatic `a_share` fallback chain. Use it only when
+the caller explicitly requests `source="mootdx"`; automatic routing uses
+`tencent`, `eastmoney`, `baostock`, `akshare`, `tushare`, and `local`.
 
 ```python
 from backtest.runner import run

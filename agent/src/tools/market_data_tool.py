@@ -13,11 +13,24 @@ from src.market_data import DEFAULT_MAX_ROWS, fetch_market_data_json
 from backtest.loaders.registry import VALID_SOURCES
 from backtest.runner import _VALID_INTERVALS
 
-# Canonical-case lookup: `_VALID_INTERVALS` mixes cases ("1m" minutes vs "1H"
-# hours), so a plain `.upper()` would turn valid "1m"/"5m"/"15m"/"30m" into
-# "1M"/"5M"/… which loaders reject. Map any case spelling to the canonical
-# form the loaders expect ("1d" -> "1D", "30M" -> "30m").
-_INTERVAL_CANON = {v.upper(): v for v in _VALID_INTERVALS}
+# Canonical-case lookup: `_VALID_INTERVALS` mixes cases ("1m" minutes vs
+# "1M" months and "1H" hours), so a plain `.upper()` fold is unsafe.  A
+# case-exact match wins first; the fallback map contains only unambiguous
+# spellings.  The documented yfinance aliases 1wk/1mo are accepted too.
+_INTERVAL_CANON = {
+    v.upper(): v
+    for v in _VALID_INTERVALS
+    if v.upper() == v or v.upper() not in _VALID_INTERVALS
+}
+_INTERVAL_CANON.update({"1WK": "1W", "1MO": "1M"})
+
+
+def _canonicalize_interval(raw: str) -> str | None:
+    """Resolve a user interval spelling to the canonical loader token."""
+    token = raw.strip()
+    if token in _VALID_INTERVALS:
+        return token
+    return _INTERVAL_CANON.get(token.upper())
 
 # Source allow-list derived from the shared loader registry (the same set the
 # backtest tool validates against), so the MCP/agent-facing surface can never
@@ -91,7 +104,7 @@ class MarketDataTool(BaseTool):
                     "Longbridge OpenAPI (requires Longbridge credentials). "
                     "Free, no key: yfinance/yahoo (US/HK/Canada equities; "
                     "Canada uses .TO/.V), okx/ccxt/binance "
-                    "(crypto), baostock/tencent/eastmoney/sina/akshare/mootdx "
+                    "(crypto), baostock/tencent/eastmoney/sina/akshare "
                     "(China A-shares), futu (HK/A via local FutuOpenD), stooq "
                     "(global EOD), pykrx (Korea KRX daily "
                     "bars for <CODE>.KS / <CODE>.KQ; needs the optional pykrx "
@@ -107,7 +120,10 @@ class MarketDataTool(BaseTool):
             },
             "interval": {
                 "type": "string",
-                "description": "Bar size, e.g. 1D, 1H, 4H, 30m.",
+                "description": (
+                    "Bar size: 1m/5m/15m/30m/1H/4H/1D, or 1W/1M for weekly/monthly "
+                    "bars built from daily ones (1M is a month, 1m a minute)."
+                ),
                 "default": "1D",
             },
             "max_rows": {
@@ -162,11 +178,16 @@ class MarketDataTool(BaseTool):
         interval = kwargs.get("interval", "1D")
         if not isinstance(interval, str):
             return _error("interval must be a string like '1D', '1H', '4H', '30m'")
-        normalized_interval = _INTERVAL_CANON.get(interval.strip().upper())
+        interval_token = interval.strip()
+        normalized_interval = (
+            interval_token
+            if interval_token in _VALID_INTERVALS
+            else _INTERVAL_CANON.get(interval_token.upper())
+        )
         if normalized_interval is None:
             return _error(
-                f"interval must be one of {sorted(_VALID_INTERVALS)} "
-                f"(case-insensitive); got {interval!r}"
+                f"interval must be one of {sorted(_VALID_INTERVALS)} (case-insensitive, "
+                f"except that 1m is one minute and 1M one month); got {interval!r}"
             )
 
         max_rows = kwargs.get("max_rows", DEFAULT_MAX_ROWS)

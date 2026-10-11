@@ -150,6 +150,9 @@ _GENERIC_PRICE_FIELD_ALIASES = {
     "pre_close": "close",
     "preclose": "close",
     "previous_close": "close",
+    # Tencent's real-time quote names the previous close ``last_close``; without
+    # this row that field could never back a claim even though the run fetched it.
+    "last_close": "close",
     "收盘": "close",
     "收盘价": "close",
     "昨收": "close",
@@ -455,6 +458,17 @@ _DASH_DATE_RE = re.compile(
     r"|\s*(?:close|open|intraday|low|high)\b))"
     r")(?![\d/-])",
     re.IGNORECASE,
+)
+# A report also joins two trading days with a slash: "（08-17/08-27 前高转支撑）".
+# ``_DASH_DATE_RE`` fences itself off from a trailing slash, so the first date
+# went unmasked and contributed 8 and 17 as candidate prices, which the OHLC
+# comparator then rejected as conflicting with a range the report had quoted
+# correctly. A slash-joined run of month-day dates is one date reference, so the
+# whole span masks as a unit.
+_DASH_DATE_PAIR_RE = re.compile(
+    r"(?<![\d/-])(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"
+    r"(?:\s*/\s*(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))+"
+    r"(?![\d/-])"
 )
 # A level stated as a RANGE has the same shape: the separator touches the
 # second number, so masking "目标价 10" left "-20" behind and a negative price
@@ -1013,6 +1027,20 @@ _YEARLESS_CLAIM_DATE_PREFIX_RE = re.compile(
 _ISO_TIMESTAMP_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})")
 
 
+# A report highlights the newest row by bolding its date cell -- ``| **09-22** |``
+# -- and the asterisks made every date matcher fail, so all four prices in that
+# row came back "numeric_claim_unavailable" while the bars sat in evidence. The
+# model could not see the defect, re-emitted the same bolded row after each
+# recovery prompt, and the run degraded to the deterministic fallback. Emphasis
+# markers carry no meaning for a date, so they are dropped before parsing.
+_MD_EMPHASIS_RE = re.compile(r"[*_`~]+")
+
+
+def _strip_emphasis(text: str) -> str:
+    """Drop Markdown emphasis markers so a decorated date cell still parses."""
+    return _MD_EMPHASIS_RE.sub("", text or "").strip()
+
+
 def _claim_date_tuple(date_value: str) -> tuple[int, int] | None:
     """Extract the (month, day) named by a report-style date cell.
 
@@ -1021,7 +1049,9 @@ def _claim_date_tuple(date_value: str) -> tuple[int, int] | None:
     ``08-10`` the strict full-cell matchers accept. Any leading month-day (or
     full ISO date) prefix is therefore accepted so such a claim still compares
     against the matching evidence row instead of being reported as
-    unevidenced.
+    unevidenced. Markdown emphasis around the cell (``**09-22**``) is dropped
+    first: a bolded date is how a report highlights its newest row, and the
+    asterisks otherwise made the whole row's prices look unevidenced.
 
     Args:
         date_value: Date cell as written in the answer.
@@ -1029,7 +1059,7 @@ def _claim_date_tuple(date_value: str) -> tuple[int, int] | None:
     Returns:
         The (month, day) tuple, or None when no date prefix is present.
     """
-    claim = (date_value or "").strip()
+    claim = _strip_emphasis(date_value)
     match = _YEARLESS_CLAIM_DATE_RE.match(claim)
     if match:
         return (int(match.group(1)), int(match.group(2)))
@@ -1067,7 +1097,7 @@ def _timestamp_matches_claim_date(timestamp: str, date_value: str) -> bool:
         True when the timestamp denotes the day the claim names.
     """
     stamp = (timestamp or "").strip()
-    claim = (date_value or "").strip()
+    claim = _strip_emphasis(date_value)
     if not stamp or not claim:
         return False
     if stamp.startswith(claim):
@@ -3557,6 +3587,7 @@ class GroundingLedger:
             _LOCALIZED_DATE_RE,
             _DATE_RE,
             _SHORT_DATE_RE,
+            _DASH_DATE_PAIR_RE,
             _DASH_DATE_RE,
             _PERCENT_RANGE_RE,
             _PERCENTAGE_POINT_RE,

@@ -17,6 +17,7 @@ from src.agent.grounding import (
     _infer_venue,
     _JOINED_CRYPTO_RE,
     _normalize_symbol,
+    _price_field_for_path,
     _scan_symbols,
     _symbol_from_csv_filename,
     _timestamp_matches_claim_date,
@@ -964,6 +965,113 @@ def test_weekday_suffixed_claim_dates_match_evidence() -> None:
     assert _timestamp_matches_claim_date("2026-08-10T00:00:00", "2026-08-10(一)") is True
     assert _timestamp_matches_claim_date("2026-08-10T00:00:00", "08-11") is False
     assert _timestamp_matches_claim_date("2026-08-10T00:00:00", "no-date") is False
+
+
+def test_markdown_emphasis_on_a_date_cell_is_ignored() -> None:
+    """Emphasis markers around a date cell do not change which day it names.
+
+    A report highlights its newest row as ``| **09-22** |``. The asterisks made
+    every date matcher fail, so the row's prices came back
+    ``numeric_claim_unavailable`` although the bars had been fetched.
+    """
+    for cell in (
+        "**09-22**",
+        "*09-22*",
+        "`09-22`",
+        "~~09-22~~",
+        "**09-22**(一)",
+        "**2026-09-22**",
+    ):
+        assert _timestamp_matches_claim_date("2026-09-22T00:00:00", cell) is True, cell
+
+
+def test_bolded_date_row_keeps_its_prices_grounded(tmp_path: Path) -> None:
+    """A bolded date cell must not void every price in its row (#1447).
+
+    Session 85eef99e0299 fetched the 09-22 bar correctly and still had its
+    final answer rejected four times, then degraded to the deterministic
+    fallback: the only defect was the bolded date, and no recovery prompt ever
+    named it, so the model re-emitted the same row until the budget ran out.
+    """
+    ledger = GroundingLedger(
+        run_dir=tmp_path,
+        user_message="分析今日（9.22）的中天科技走势",
+    )
+    ledger.ingest_tool_result(
+        tool_name="get_market_data",
+        arguments={"codes": ["600522.SH"], "source": "tencent"},
+        result=json.dumps(
+            {
+                "600522.SH": [
+                    {
+                        "trade_date": "2026-09-21T00:00:00",
+                        "open": 36.10,
+                        "high": 37.25,
+                        "low": 36.10,
+                        "close": 36.95,
+                    },
+                    {
+                        "trade_date": "2026-09-22T00:00:00",
+                        "open": 37.54,
+                        "high": 38.48,
+                        "low": 36.50,
+                        "close": 36.88,
+                    },
+                ],
+                "_provenance": {
+                    "600522.SH": {
+                        "source": "tencent",
+                        "requested_source": "tencent",
+                        "detected_source": "tencent",
+                        "fallback_used": False,
+                        "currency_conversion": "none",
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        call_id="prices",
+        success=True,
+    )
+
+    # The table that actually failed: a fund-flow panel whose "收盘" column is
+    # validated as a price and whose newest row carries a bolded date cell.
+    bolded = ledger.validate_final_answer(
+        """| 日期 | 收盘 |
+|---|---|
+| 09-21 | 36.95 |
+| **09-22** | 36.88 |"""
+    )
+    plain = ledger.validate_final_answer(
+        """| 日期 | 收盘 |
+|---|---|
+| 09-22 | 36.88 |"""
+    )
+
+    unavailable = {"numeric_claim_unavailable", "numeric_claim_conflict"}
+    assert not any(issue["code"] in unavailable for issue in bolded.issues), bolded.issues
+    assert not any(issue["code"] in unavailable for issue in plain.issues), plain.issues
+
+
+def test_slash_joined_dates_are_masked() -> None:
+    """``08-17/08-27`` is one date reference, not the prices 8 and 17 (#1447).
+
+    ``_DASH_DATE_RE`` fences itself off from a trailing slash, so the first date
+    of a slash-joined pair survived masking and its digits were compared against
+    the observed OHLC range, rejecting a report that had quoted the range
+    correctly.
+    """
+    assert GroundingLedger._numbers_without_dates_or_percent("（08-17/08-27 前高转支撑）") == []
+    assert GroundingLedger._numbers_without_dates_or_percent("08-17/08-27/09-22") == []
+    # A genuine price range beside the dates stays checkable.
+    assert GroundingLedger._numbers_without_dates_or_percent(
+        "下方 36.10-36.20（08-17/08-27 前高转支撑）"
+    ) == [36.1, 36.2]
+
+
+def test_last_close_alias_maps_to_close() -> None:
+    """Tencent's ``last_close`` is a close, not an ungroundable leaf (#1447)."""
+    assert _price_field_for_path("data.quotes.600522.last_close") == "close"
 
 
 def test_run_dir_ohlc_csv_us_filename_maps_symbol(tmp_path: Path) -> None:

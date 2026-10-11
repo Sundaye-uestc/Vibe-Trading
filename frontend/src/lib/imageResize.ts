@@ -110,7 +110,27 @@ export async function resizeImageFileToDataUrl(
     throw new ImageResizeError("too-large");
   }
 
-  const image = await loadImage(await readAsDataUrl(file));
+  return drawToJpeg(await loadImage(await readAsDataUrl(file)), options);
+}
+
+/** Re-encode an already-stored data URL at the given cap.
+ *
+ * Compacts a value written before downscaling existed. A legacy
+ * full-resolution avatar can occupy the entire origin quota on its own, which
+ * makes every later write fail no matter how small it is — so a stored blob
+ * that is merely large is a bug, not just an inconvenience.
+ */
+export async function resizeDataUrlToDataUrl(
+  dataUrl: string,
+  options: ResizeOptions,
+): Promise<string> {
+  return drawToJpeg(await loadImage(dataUrl), options);
+}
+
+function drawToJpeg(
+  image: HTMLImageElement,
+  options: ResizeOptions,
+): string {
   const target = fitWithinSize(
     image.naturalWidth || image.width,
     image.naturalHeight || image.height,

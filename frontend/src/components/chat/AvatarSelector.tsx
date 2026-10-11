@@ -9,6 +9,7 @@ import {
   resizeImageFileToDataUrl,
   type ImageResizeErrorCode,
 } from "@/lib/imageResize";
+import { writeImageValue } from "@/lib/storage";
 
 const GRADIENTS = [
   { label: "Ocean", value: "from-[#1a365d] to-[#0891b2]" },
@@ -155,9 +156,10 @@ export function AvatarSelector({ open, onClose }: Props) {
     }
     setSaveError("");
     const key = tab === "agent" ? "qa-agent-avatar" : "qa-user-avatar";
-    try {
-      localStorage.setItem(key, JSON.stringify(config));
-    } catch {
+    const saved = writeImageValue(key, JSON.stringify(config), () => {
+      toast.warning(t("layout.storageReclaimed"));
+    });
+    if (!saved) {
       // Storage refused the write. Report it and keep the dialog open: the
       // exception used to escape here, so the avatar-changed event and
       // onClose() never ran and the save button looked dead.

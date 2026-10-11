@@ -58,6 +58,7 @@
     "imageLoadFailed": "Failed to load image, please retry",
     "imageResizeUnsupported": "This browser cannot resize images, so this one cannot be saved",
     "imageSaveFailed": "Save failed: local storage is full or unavailable",
+    "storageReclaimed": "Freed space by clearing a previously stored image",
     "changeBackground": "Change Background",
     "applyBackground": "Apply Background",
     "removeBackground": "Remove Background",

@@ -1,3 +1,5 @@
+import { writeImageValue } from "@/lib/storage";
+
 const STORAGE_KEY = "qa-background";
 
 export function getStoredBackground(): string | null {
@@ -16,14 +18,15 @@ export function getStoredBackground(): string | null {
  * disappears on the next reload.
  */
 export function saveBackground(dataUrl: string | null): boolean {
-  try {
-    if (dataUrl) {
-      localStorage.setItem(STORAGE_KEY, dataUrl);
-    } else {
+  if (dataUrl === null) {
+    try {
       localStorage.removeItem(STORAGE_KEY);
+      return true;
+    } catch {
+      return false;
     }
-    return true;
-  } catch {
-    return false;
   }
+  // Shares the origin quota with the avatars: a legacy full-resolution avatar
+  // can fill it completely, so the write evicts the other image blobs first.
+  return writeImageValue(STORAGE_KEY, dataUrl);
 }

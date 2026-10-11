@@ -130,6 +130,13 @@ SUMMARY_CHUNK_CHARS = 80_000
 # retry once with a nudge before failing the run on a second consecutive one.
 MAX_CONSECUTIVE_EMPTY_RESPONSE_SKIPS = 1
 
+# A final text-only turn is the last chance to produce a user-visible answer.
+# Providers occasionally return an empty completion exactly at that boundary
+# (for example after a long context compaction).  Permit one extra sample of
+# the same text-only turn without increasing ``max_iterations``.  A second
+# empty sample still fails explicitly instead of inventing research results.
+FINAL_EMPTY_RESPONSE_RETRY_BUDGET = 1
+
 
 def _override(name: str):
     """Return a monkeypatched module-level override if present."""
@@ -1348,6 +1355,11 @@ class AgentLoop:
         # so a run can never end on the deterministic placeholder simply
         # because its very last sample happened to be markup.
         text_only_retry_budget = 1
+        # Keep an empty completion on the forced-text closing turn from
+        # turning a completed long run into an avoidable failure.  This retry
+        # is a resample of the same iteration (see the DSML retry below), so
+        # it does not weaken the configured iteration ceiling.
+        final_empty_retry_budget = FINAL_EMPTY_RESPONSE_RETRY_BUDGET
 
         # Zombie-run watchdog: fail a run that makes no forward progress
         # (no LLM completion, no tool result) for the stall timeout instead
@@ -1452,7 +1464,17 @@ class AgentLoop:
                                 "iter": current_iter,
                             }
                         )
-                        messages.append({"role": "system", "content": pending_directive})
+                        # Anthropic's Messages API accepts only one leading
+                        # system block.  This directive is runtime steering,
+                        # so keep it as a user turn with an inline system tag
+                        # rather than appending a second system message after
+                        # the conversation has started.
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": f"<system>{pending_directive}</system>",
+                            }
+                        )
 
                 # Streaming output + collect thinking text
                 thinking_chunks: List[str] = []
@@ -1674,6 +1696,33 @@ class AgentLoop:
                                 "model": getattr(self.llm, "model_name", None) or get_env_config().llm.langchain_model_name,
                             }
                         )
+                        if is_last_iteration and final_empty_retry_budget > 0:
+                            # The provider returned no answer on the forced
+                            # text-only turn.  Ask for a plain-text answer and
+                            # resample this same turn without consuming an
+                            # additional tool-calling iteration.  Keep the
+                            # retry prompt as a user message because Anthropic
+                            # accepts only one leading system block.
+                            final_empty_retry_budget -= 1
+                            consecutive_empty_responses = 0
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "<system>[SYSTEM] Your final response was empty. "
+                                        "Reply now with the best plain-text answer you can provide; "
+                                        "do not call tools and do not emit XML or DSML markup.</system>"
+                                    ),
+                                }
+                            )
+                            iteration -= 1
+                            trace.write(
+                                {
+                                    "type": "forced_text_only_empty_retry",
+                                    "iter": current_iter,
+                                }
+                            )
+                            continue
                         # A transient empty completion (no text, no tool calls)
                         # must not kill a run that has already done its work:
                         # nudge once and retry, failing only on a second
@@ -1683,11 +1732,11 @@ class AgentLoop:
                         consecutive_empty_responses += 1
                         messages.append(
                             {
-                                "role": "system",
+                                "role": "user",
                                 "content": (
-                                    "[SYSTEM] Your previous response was empty (no text, no tool "
+                                    "<system>[SYSTEM] Your previous response was empty (no text, no tool "
                                     "calls). Respond again with either your next tool call or "
-                                    "your final plain-text answer."
+                                    "your final plain-text answer.</system>"
                                 ),
                             }
                         )
@@ -1711,11 +1760,11 @@ class AgentLoop:
                         )
                         messages.append(
                             {
-                                "role": "system",
+                                "role": "user",
                                 "content": (
-                                    "[SYSTEM] Your previous response was not released: it contained "
+                                    "<system>[SYSTEM] Your previous response was not released: it contained "
                                     "tool-call syntax even though tool calling is unavailable now. "
-                                    "Provide the final answer as plain prose only, with no XML/DSML tags."
+                                    "Provide the final answer as plain prose only, with no XML/DSML tags.</system>"
                                 ),
                             }
                         )

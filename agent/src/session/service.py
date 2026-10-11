@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import logging
 import threading
 import time
@@ -32,6 +33,17 @@ if TYPE_CHECKING:
 # Dedicated thread pool limited to four concurrent agents to avoid exhausting the default executor.
 _AGENT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="agent")
 logger = logging.getLogger(__name__)
+
+
+# A failed long run must leave enough bounded evidence for a follow-up to
+# continue, while keeping the persisted transcript and the next prompt small.
+# The complete tool result remains in the run trace/sidecars; these limits are
+# only for the session-level recovery handoff.
+_RECOVERY_TRAIL_MAX_ENTRIES = 64
+_RECOVERY_ARG_MAX_CHARS = 2_000
+_RECOVERY_PREVIEW_MAX_CHARS = 1_000
+_RECOVERY_HISTORY_MAX_ENTRIES = 16
+_RECOVERY_HISTORY_MAX_CHARS = 5_000
 
 
 #: Terminal attempt status -> SSE event name. Cancellation is its own event so
@@ -402,10 +414,11 @@ class SessionService:
         """Compress stored history into a handoff summary (non-destructive).
 
         The original messages stay in the append-only JSONL log; a compaction
-        marker is appended after the folded head, and
-        :meth:`_convert_messages_to_history` replays the summary plus every
-        message after the marker. Deleting the marker (or the whole file's last
-        line) restores the uncompressed view, so this never destroys data.
+        marker is appended after the folded head and retained tail, and
+        :meth:`_convert_messages_to_history` uses its ``through`` boundary to
+        replay the summary plus every retained message. Deleting the marker
+        (or the whole file's last line) restores the uncompressed view, so this
+        never destroys data.
 
         Args:
             session_id: Session whose stored history should be compressed.
@@ -603,6 +616,26 @@ class SessionService:
             reply_metadata = {}
             if attempt.run_dir:
                 reply_metadata["run_id"] = Path(attempt.run_dir).name
+            result_tool_trail = result.get("tool_trail", [])
+            if not isinstance(result_tool_trail, list):
+                result_tool_trail = []
+            # Preserve the historical full trail for successful replies; only
+            # failed/cancelled recovery handoffs need the bounded
+            # representation. The complete result is still available in the
+            # run trace and its sidecars.
+            persisted_tool_trail = (
+                result_tool_trail
+                if attempt.status == AttemptStatus.COMPLETED
+                else self._bound_recovery_tool_trail(result_tool_trail)
+            )
+            if attempt.status != AttemptStatus.COMPLETED:
+                recovery_context = self._build_recovery_context(
+                    attempt.run_dir,
+                    persisted_tool_trail,
+                    total_tool_count=len(result_tool_trail),
+                )
+                if recovery_context:
+                    reply_metadata["recovery_context"] = recovery_context
             reply_metadata["status"] = attempt.status.value
             if attempt.metrics:
                 reply_metadata["metrics"] = attempt.metrics
@@ -625,11 +658,12 @@ class SessionService:
                 content=self._format_result_message(attempt),
                 linked_attempt_id=attempt.attempt_id,
                 metadata=reply_metadata,
-                tool_trail=(
-                    result.get("tool_trail", [])
-                    if attempt.status == AttemptStatus.COMPLETED
-                    else []
-                ),
+                # Keep the redacted tool trail for failed attempts too. A
+                # follow-up recovery turn needs to know which evidence was
+                # already collected; dropping it here forces the model to
+                # either repeat expensive reads or claim that evidence is
+                # unavailable after a transient final-response failure.
+                tool_trail=persisted_tool_trail,
             )
             self.store.append_message(reply)
             # The append-only transcript is the user-visible source of truth.
@@ -810,6 +844,94 @@ class SessionService:
         return result
 
     @staticmethod
+    def _bound_recovery_tool_trail(
+        trail: list[Any],
+    ) -> list[Dict[str, Any]]:
+        """Copy a tool trail into the session log under a hard size bound.
+
+        Tool events already carry redacted previews, but arguments can still be
+        large (for example a generated strategy expression). Keep enough
+        structure for recovery while leaving the complete payload in the run
+        trace. Small entries are returned unchanged so the existing history API
+        contract remains stable.
+        """
+        entries = [entry for entry in trail if isinstance(entry, dict)]
+        if len(entries) > _RECOVERY_TRAIL_MAX_ENTRIES:
+            # Keep the beginning for the initial data identity and the newest
+            # entries for the point at which the run failed.
+            head = min(8, _RECOVERY_TRAIL_MAX_ENTRIES // 2)
+            entries = entries[:head] + entries[-(_RECOVERY_TRAIL_MAX_ENTRIES - head) :]
+
+        bounded: list[Dict[str, Any]] = []
+        for entry in entries:
+            item = dict(entry)
+            arguments = item.get("arguments")
+            if isinstance(arguments, dict):
+                try:
+                    encoded = json.dumps(arguments, ensure_ascii=False, default=str)
+                except (TypeError, ValueError):
+                    encoded = str(arguments)
+                if len(encoded) > _RECOVERY_ARG_MAX_CHARS:
+                    item["arguments"] = {
+                        "_truncated": encoded[:_RECOVERY_ARG_MAX_CHARS]
+                    }
+                else:
+                    # Round-trip through JSON so unusual argument values
+                    # (Path, datetime, etc.) cannot make message persistence
+                    # fail after the run itself has already completed.
+                    try:
+                        item["arguments"] = json.loads(encoded)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        item["arguments"] = {"_text": encoded}
+            if "preview" in item:
+                item["preview"] = str(item.get("preview") or "")[
+                    :_RECOVERY_PREVIEW_MAX_CHARS
+                ]
+            bounded.append(item)
+        return bounded
+
+    @staticmethod
+    def _build_recovery_context(
+        run_dir: Optional[str],
+        trail: list[Dict[str, Any]],
+        *,
+        total_tool_count: int,
+    ) -> Dict[str, Any]:
+        """Build a small, path-safe index for a failed run's next turn."""
+        context: Dict[str, Any] = {
+            "tool_count": max(total_tool_count, len(trail)),
+            "tools": [
+                {
+                    "name": str(entry.get("tool") or "unknown"),
+                    "status": str(entry.get("status") or "unknown"),
+                }
+                for entry in trail
+            ],
+        }
+        if not run_dir:
+            return context if trail else {}
+        run_path = Path(run_dir)
+        context["run_id"] = run_path.name
+        # Expose only relative artifact names. Absolute host paths belong in
+        # the trusted run trace, not in the conversation/API metadata.
+        artifacts: list[str] = []
+        if run_path.is_dir():
+            for path in sorted(run_path.rglob("*")):
+                if not path.is_file():
+                    continue
+                try:
+                    relative = path.relative_to(run_path).as_posix()
+                except ValueError:
+                    continue
+                if relative == "run_card.json" or relative.startswith("artifacts/"):
+                    artifacts.append(relative)
+                if len(artifacts) >= 32:
+                    break
+        if artifacts:
+            context["artifacts"] = artifacts
+        return context
+
+    @staticmethod
     def _record_tool_trail_event(
         tool_trail: list[Dict[str, Any]],
         event_type: str,
@@ -924,19 +1046,45 @@ class SessionService:
                 metadata = None
             return metadata if isinstance(metadata, dict) else {}
 
+        def _tool_trail(msg: Any) -> list[Dict[str, Any]]:
+            """Return the bounded redacted tool trail attached to a reply."""
+            trail = getattr(msg, "tool_trail", None)
+            if trail is None and isinstance(msg, dict):
+                trail = msg.get("tool_trail")
+            if not isinstance(trail, list):
+                return []
+            return [item for item in trail if isinstance(item, dict)]
+
         # ``messages`` includes the current turn as its last element; the prompt
         # is passed separately, so the history stops before it.
         body = messages[:-1]
 
-        # Honour the newest compaction marker: the head it folded is represented
-        # by the summary that follows it, so the replay window starts there.
+        # Honour the newest compaction marker.  ``compact_session`` appends the
+        # marker to the append-only log, after the retained tail, so locating
+        # the tail by marker position would drop those messages on the next
+        # turn.  The marker's ``through`` id is the durable boundary between
+        # the folded head and messages that must still be replayed.  Older
+        # markers (and hand-authored records) may not carry that id, so retain
+        # the positional fallback for those records.
         compact_at = -1
         for idx, msg in enumerate(body):
             if _metadata(msg).get("type") == "compaction":
                 compact_at = idx
         if compact_at >= 0:
-            leading = body[compact_at + 1:]
-            summary = _content(body[compact_at]).strip()
+            marker = body[compact_at]
+            marker_metadata = _metadata(marker)
+            through_id = marker_metadata.get("through")
+            tail_start = None
+            if through_id:
+                for idx, msg in enumerate(body):
+                    if (
+                        (msg.message_id if hasattr(msg, "message_id") else msg.get("message_id"))
+                        == through_id
+                    ):
+                        tail_start = idx + 1
+                        break
+            leading = body[tail_start:] if tail_start is not None else body[compact_at + 1:]
+            summary = _content(marker).strip()
         else:
             leading = body
             summary = ""
@@ -948,6 +1096,62 @@ class SessionService:
             if not content.strip() or role not in ("user", "assistant"):
                 continue
             content = re.sub(r"Run directory:\s*\S+", _shorten_run_dir, content).strip()
+            # Failed or cancelled attempts still carry useful, redacted tool
+            # previews. Keep a bounded evidence ledger in the next turn's
+            # history so a recovery prompt can continue from collected data
+            # instead of assuming the failed attempt made no progress.
+            trail = _tool_trail(msg)
+            metadata = _metadata(msg)
+            recovery_context = metadata.get("recovery_context")
+            if not isinstance(recovery_context, dict):
+                recovery_context = {}
+            status_value = str(metadata.get("status") or "")
+            is_completed_reply = status_value == AttemptStatus.COMPLETED.value
+            # Legacy or hand-authored messages may not carry a status. Treat
+            # those as recoverable when a trail is present; only explicit
+            # completed replies skip the extra evidence appendix.
+            if role == "assistant" and (trail or recovery_context) and (
+                not is_completed_reply or recovery_context
+            ):
+                run_id = str(
+                    recovery_context.get("run_id")
+                    or metadata.get("run_id")
+                    or ""
+                )
+                lines = ["[Previous attempt evidence]"]
+                if run_id:
+                    lines.append(f"run_id={run_id}")
+                tool_count = recovery_context.get("tool_count")
+                if isinstance(tool_count, int) and tool_count > len(trail):
+                    lines.append(f"tool_count={tool_count} (bounded preview)")
+                artifacts = recovery_context.get("artifacts")
+                if isinstance(artifacts, list) and artifacts:
+                    lines.append("artifacts=" + ", ".join(str(item) for item in artifacts[:32]))
+                if len(trail) > _RECOVERY_HISTORY_MAX_ENTRIES:
+                    history_entries = trail[:4] + trail[-(_RECOVERY_HISTORY_MAX_ENTRIES - 4) :]
+                    lines.append(
+                        f"tool_entries_omitted={len(trail) - len(history_entries)}"
+                    )
+                else:
+                    history_entries = trail
+                for entry in history_entries:
+                    tool = str(entry.get("tool") or "unknown")
+                    status = str(entry.get("status") or "unknown")
+                    preview = str(entry.get("preview") or "").replace("\n", " ")[:500]
+                    line = f"- {tool} [{status}]"
+                    arguments = entry.get("arguments")
+                    if isinstance(arguments, dict) and arguments:
+                        try:
+                            encoded_args = json.dumps(
+                                arguments, ensure_ascii=False, default=str
+                            )[:400]
+                        except (TypeError, ValueError):
+                            encoded_args = str(arguments)[:400]
+                        line += f" args={encoded_args}"
+                    if preview:
+                        line += f": {preview}"
+                    lines.append(line)
+                content += "\n\n" + "\n".join(lines)[:_RECOVERY_HISTORY_MAX_CHARS]
             if content:
                 history.append({"role": role, "content": content})
 

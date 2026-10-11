@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Vibe-Trading API Server - RESTful API for finance research and backtesting.
-
-Thin assembler: creates the FastAPI app, mounts middleware, registers route
-modules, and re-exports symbols for test compatibility.  All shared
-infrastructure lives in ``src.api.{security,models,helpers,state}``.
-"""
+"""Vibe-Trading REST API entry point and thin route assembler."""
 
 from __future__ import annotations
 
@@ -243,6 +238,7 @@ from src.api.uploads_routes import (  # noqa: F401, E402
 # --- Channels ---
 from src.api.channels_routes import register_channels_routes  # noqa: E402
 register_channels_routes(app)
+from src.api.channels_config_routes import register_channels_config_routes; register_channels_config_routes(app)  # noqa: E402
 from src.api.qveris_routes import qveris_router  # noqa: E402  # QVERIS-INTEGRATION
 app.include_router(qveris_router)  # QVERIS-INTEGRATION
 
@@ -329,7 +325,6 @@ from src.api.scheduled_routes import (  # noqa: E402, F401
     _get_scheduled_research_store,
     _scheduled_research_scheduler_enabled,
 )
-
 
 # ============================================================================
 # Main Entry Point

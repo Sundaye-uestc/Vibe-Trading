@@ -291,7 +291,12 @@ if ChatOpenAI is not None:
             self._vibe_api_key = vibe_api_key or ""
             self._vibe_owned_http_clients = tuple(vibe_owned_http_clients or ())
             self._vibe_ambient_header_names = tuple(
-                name for name in ambient_names if name not in explicit_names
+                # HTTP header names are case-insensitive.  The OpenAI SDK
+                # preserves the spelling from OPENAI_CUSTOM_HEADERS, while
+                # provider defaults may use a different casing; compare the
+                # normalized names so an ambient ``x-case`` marker cannot
+                # accidentally omit an explicit ``X-Case`` header.
+                name for name in ambient_names if name.lower() not in explicit_names_lower
             )
             self._vibe_has_explicit_authorization = (
                 "authorization" in explicit_names_lower
@@ -1108,6 +1113,20 @@ _EFFORT_CAPABLE_ANTHROPIC: tuple[str, ...] = (
     "claude-sonnet-4-6",
 )
 
+# DeepSeek's Coding Plan endpoint speaks the Anthropic Messages shape, but its
+# effort enum is narrower than the common picker exposed by the application:
+# it accepts only ``low``, ``high`` and ``max``.  ``medium`` is the closest
+# supported setting and is intentionally mapped to ``high``.  ``none`` means
+# "use the provider default" and must be omitted instead of being sent as an
+# invalid Anthropic effort value.
+_DEEPSEEK_MESSAGES_EFFORT: dict[str, str] = {
+    "low": "low",
+    "medium": "high",
+    "high": "high",
+    "max": "max",
+}
+_ANTHROPIC_EFFORT_VALUES = frozenset({"low", "medium", "high", "max", "xhigh"})
+
 
 def _anthropic_supports_effort(model: str) -> bool:
     """Report whether an Anthropic model accepts the effort parameter.
@@ -1120,6 +1139,37 @@ def _anthropic_supports_effort(model: str) -> bool:
     """
     name = (model or "").strip().lower()
     return any(name.startswith(prefix) for prefix in _EFFORT_CAPABLE_ANTHROPIC)
+
+
+def _anthropic_effort_for_model(model: str, effort: str) -> str | None:
+    """Return the wire-safe Messages effort for ``model``.
+
+    The web UI deliberately offers one shared set of values to all providers,
+    while individual Messages endpoints expose different enums.  Keep the
+    provider-specific conversion here so callers cannot accidentally send
+    DeepSeek's unsupported ``medium`` or ``none`` values to a strict endpoint.
+
+    Args:
+        model: Configured model name, including optional date suffixes.
+        effort: Normalized UI/environment value.
+
+    Returns:
+        A value accepted by the target Anthropic-compatible endpoint, or
+        ``None`` when effort is unset/unsupported.
+    """
+    normalized_effort = (effort or "").strip().lower()
+    if not normalized_effort or normalized_effort == "none":
+        return None
+
+    # Model identifiers occur with both punctuation styles in settings and in
+    # provider responses (``deepseek-v4.1-flash`` vs ``deepseek-v4-1-flash``).
+    normalized_model = re.sub(r"[^a-z0-9]+", "-", (model or "").strip().lower()).strip("-")
+    if normalized_model.startswith("deepseek-v4-1-flash"):
+        return _DEEPSEEK_MESSAGES_EFFORT.get(normalized_effort)
+
+    if _anthropic_supports_effort(model) and normalized_effort in _ANTHROPIC_EFFORT_VALUES:
+        return normalized_effort
+    return None
 
 
 def _adapter_accepts_effort(chat_anthropic: type) -> bool:
@@ -1153,9 +1203,9 @@ def _build_anthropic(
     field (e.g. claude-opus-5 / claude-sonnet-5) work transparently while models
     that still accept it keep the configured deterministic value.
 
-    `effort` is the configured LANGCHAIN_REASONING_EFFORT, forwarded only to
-    models that accept it (see `_anthropic_supports_effort`); an empty string
-    means unset.
+    `effort` is the configured LANGCHAIN_REASONING_EFFORT. It is normalized to
+    the target model's Messages enum before being forwarded; an empty string
+    or ``none`` means unset.
     """
     try:
         module = import_module("langchain_anthropic")
@@ -1167,11 +1217,8 @@ def _build_anthropic(
         ) from exc
 
     safe_anthropic = _make_temperature_safe_anthropic(chat_anthropic)
-    use_effort = (
-        bool(effort)
-        and _anthropic_supports_effort(model)
-        and _adapter_accepts_effort(chat_anthropic)
-    )
+    anthropic_effort = _anthropic_effort_for_model(model, effort)
+    use_effort = bool(anthropic_effort) and _adapter_accepts_effort(chat_anthropic)
     # Effort makes langchain-anthropic enable adaptive thinking, and the API
     # then rejects any temperature other than 1:
     #   `temperature` may only be set to 1 when thinking is enabled or in
@@ -1188,9 +1235,9 @@ def _build_anthropic(
         max_retries=get_env_config().llm.max_retries,
         callbacks=callbacks,
         # Rendered by langchain-anthropic as output_config={'effort': ...}.
-        # Without it, Fable 5 and Opus 5 run at the default effort however
+        # Without it, a supported model runs at the default effort however
         # LANGCHAIN_REASONING_EFFORT is set.
-        reasoning_effort=effort if use_effort else None,
+        reasoning_effort=anthropic_effort if use_effort else None,
         api_key=os.getenv("ANTHROPIC_API_KEY") or None,  # noqa: env-gate — native provider credential
         base_url=(
             os.getenv("ANTHROPIC_BASE_URL")  # noqa: env-gate — native provider endpoint

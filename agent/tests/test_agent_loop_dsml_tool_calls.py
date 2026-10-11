@@ -11,6 +11,7 @@ from src.agent.progress import emit_progress
 from src.agent.tools import BaseTool, ToolRegistry
 from src.memory.persistent import PersistentMemory
 from src.providers.chat import ChatLLM
+from tests.message_roles_helpers import assert_system_messages_only_lead
 
 
 class _Chunk:
@@ -32,11 +33,13 @@ class _ScriptedStreamingLLM:
 
     def __init__(self, responses: list[str]) -> None:
         self._responses = responses
+        self.messages_history: list[list[dict[str, Any]]] = []
 
     def bind_tools(self, tools: list[dict[str, Any]]) -> "_ScriptedStreamingLLM":
         return self
 
     def stream(self, messages: list[dict[str, Any]], config: dict[str, Any] | None = None):
+        self.messages_history.append(list(messages))
         yield _Chunk(self._responses.pop(0))
 
 
@@ -128,6 +131,9 @@ def test_agent_loop_executes_dsml_textual_tool_call(
     assert {
         payload["tool"] for payload in tool_events.values()
     } == {"echo_probe"}
+    # The assistant/tool pair remains intact while runtime steering is added;
+    # no mid-conversation system role reaches any provider.
+    assert_system_messages_only_lead(agent.llm._llm.messages_history)
 
 def test_agent_loop_never_releases_tool_call_syntax_as_a_final_answer(
     tmp_path: Path,

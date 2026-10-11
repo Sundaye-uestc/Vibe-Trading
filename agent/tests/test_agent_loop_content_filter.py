@@ -237,6 +237,10 @@ def test_single_empty_response_recovers_with_nudge(
         and "empty" in str(m.get("content", "")).casefold()
     ]
     assert len(system_msgs) == 1
+    assert system_msgs[0]["role"] == "user"
+    assert str(system_msgs[0]["content"]).startswith("<system>")
+    assert str(system_msgs[0]["content"]).endswith("</system>")
+    assert_system_messages_only_lead(llm.messages_history)
 
 def test_auto_compact_summary_hard_deadline(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

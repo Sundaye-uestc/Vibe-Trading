@@ -465,6 +465,62 @@ class TestCompactSession:
         # at the 4th original message (index 3 of the 9 stored rows).
         assert marker.metadata["through"] == stored[-6].message_id
 
+    def test_compact_then_append_preserves_the_retained_tail(self, tmp_path, monkeypatch):
+        """A real compaction followed by another turn must replay the tail."""
+        from src.session.models import Message
+
+        service = _service(tmp_path, monkeypatch)
+        session = service.create_session(title="compact then continue")
+        for index in range(8):
+            service.store.append_message(
+                Message(
+                    session_id=session.session_id,
+                    role="user" if index % 2 == 0 else "assistant",
+                    content=f"turn {index}",
+                )
+            )
+
+        class _FakeLLM:
+            def __init__(self, **kwargs) -> None:
+                del kwargs
+
+            def chat(self, messages, **kwargs):
+                del messages, kwargs
+                return type("R", (), {"content": "SUMMARY BODY"})()
+
+        monkeypatch.setattr("src.providers.chat.ChatLLM", _FakeLLM)
+        result = asyncio.run(service.compact_session(session.session_id))
+        assert result["status"] == "compacted"
+
+        # Simulate a completed follow-up turn and the next user prompt.  The
+        # final prompt is excluded by _convert_messages_to_history, just as it
+        # is during _run_attempt.
+        service.store.append_message(
+            Message(session_id=session.session_id, role="user", content="follow-up question")
+        )
+        service.store.append_message(
+            Message(session_id=session.session_id, role="assistant", content="follow-up answer")
+        )
+        service.store.append_message(
+            Message(session_id=session.session_id, role="user", content="current prompt")
+        )
+
+        history = SessionService._convert_messages_to_history(
+            service.store.get_messages(session.session_id)
+        )
+        contents = [entry["content"] for entry in history]
+
+        assert contents[0].startswith("[Conversation compressed — handoff summary]")
+        assert contents[1:] == [
+            "turn 4",
+            "turn 5",
+            "turn 6",
+            "turn 7",
+            "follow-up question",
+            "follow-up answer",
+        ]
+        assert all(f"turn {index}" not in contents for index in range(4))
+
     def test_compact_is_a_noop_for_a_short_history(self, tmp_path, monkeypatch):
         from src.session.models import Message
 
@@ -478,6 +534,42 @@ class TestCompactSession:
 
         assert result["status"] == "noop"
         assert len(service.store.get_messages(session.session_id)) == 1
+
+    def test_failed_attempt_replays_redacted_tool_evidence(self, tmp_path, monkeypatch):
+        """A follow-up can continue from evidence collected before a failure."""
+        from src.session.models import Message
+
+        service = _service(tmp_path, monkeypatch)
+        session = service.create_session(title="recover evidence")
+        service.store.append_message(
+            Message(session_id=session.session_id, role="user", content="research")
+        )
+        service.store.append_message(
+            Message(
+                session_id=session.session_id,
+                role="assistant",
+                content="Execution failed: empty_model_response",
+                metadata={"run_id": "run-evidence-1", "status": "failed"},
+                tool_trail=[
+                    {
+                        "tool": "get_market_data",
+                        "status": "ok",
+                        "preview": '{"AAPL.US":{"close":123}}',
+                    }
+                ],
+            )
+        )
+        service.store.append_message(
+            Message(session_id=session.session_id, role="user", content="continue")
+        )
+
+        history = SessionService._convert_messages_to_history(
+            service.store.get_messages(session.session_id)
+        )
+        assert "[Previous attempt evidence]" in history[-1]["content"]
+        assert "get_market_data [ok]" in history[-1]["content"]
+        assert "run-evidence-1" in history[-1]["content"]
+        assert "AAPL.US" in history[-1]["content"]
 
     def test_compact_refuses_a_missing_session(self, tmp_path, monkeypatch):
         service = _service(tmp_path, monkeypatch)

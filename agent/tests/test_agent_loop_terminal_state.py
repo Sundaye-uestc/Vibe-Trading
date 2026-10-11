@@ -39,6 +39,9 @@ class _StubLLMNoFinal:
     because `final_content` stays empty and no `metrics.csv` is written.
     """
 
+    def __init__(self) -> None:
+        self.calls = 0
+
     def stream_chat(
         self,
         messages: list[dict[str, Any]],
@@ -49,7 +52,36 @@ class _StubLLMNoFinal:
         idle_timeout_s: float | None = None,
         should_cancel: Callable[[], bool] | None = None,
     ) -> _StubLLMResponse:
+        self.calls += 1
         return _StubLLMResponse()
+
+    def chat(self, messages: list[dict[str, Any]], **_: Any) -> _StubLLMResponse:
+        return _StubLLMResponse()
+
+
+class _StubLLMEmptyThenFinal:
+    """Return an empty forced-text turn once, then a plain-text answer."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[Any] | None = None,
+        on_text_chunk: Callable[[str], None] | None = None,
+        on_reasoning_chunk: Callable[[str], None] | None = None,
+        timeout: int | None = None,
+        idle_timeout_s: float | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> _StubLLMResponse:
+        self.calls += 1
+        response = _StubLLMResponse()
+        if self.calls == 2:
+            response.content = "final answer"
+            if on_text_chunk:
+                on_text_chunk(response.content)
+        return response
 
     def chat(self, messages: list[dict[str, Any]], **_: Any) -> _StubLLMResponse:
         return _StubLLMResponse()
@@ -168,6 +200,38 @@ def test_empty_model_response_returns_specific_reason(
     assert "iteration 2" in result["reason"]
     assert result["iterations"] >= 1
     assert result["max_iterations"] == 3
+
+
+def test_empty_forced_text_turn_gets_one_extra_sample(
+    tmp_path: Path,
+) -> None:
+    """A final-turn empty response is retried without raising the iteration cap."""
+    llm = _StubLLMEmptyThenFinal()
+    agent = _build_agent(llm, max_iter=1, tmp_run_dir=tmp_path / "run")
+
+    result = agent.run(user_message="anything")
+
+    assert result["status"] == "success"
+    assert result["content"] == "final answer"
+    assert llm.calls == 2
+    assert result["iterations"] == 1
+    assert result["max_iterations"] == 1
+
+
+def test_empty_forced_text_turn_still_fails_after_retry(
+    tmp_path: Path,
+) -> None:
+    """Repeated empty final samples fail explicitly and never leak a placeholder."""
+    llm = _StubLLMNoFinal()
+    agent = _build_agent(llm, max_iter=1, tmp_run_dir=tmp_path / "run")
+
+    result = agent.run(user_message="anything")
+
+    assert result["status"] == "failed"
+    assert result["reason"].startswith("empty_model_response")
+    assert llm.calls == 2
+    assert result["iterations"] == 1
+    assert "[CLEARED FROM CONTEXT:" not in result["content"]
 
 
 def test_cancelled_terminal_returns_reason(tmp_path: Path) -> None:

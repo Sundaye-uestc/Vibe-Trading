@@ -367,6 +367,64 @@ class TestAnthropicNativeProvider:
 
         assert kwargs["reasoning_effort"] == "high"
 
+    @pytest.mark.parametrize(
+        ("configured_effort", "wire_effort"),
+        [
+            ("low", "low"),
+            ("medium", "high"),
+            ("high", "high"),
+            ("max", "max"),
+        ],
+    )
+    def test_deepseek_v41_flash_maps_to_its_messages_effort_enum(
+        self, configured_effort: str, wire_effort: str
+    ) -> None:
+        """DeepSeek Coding Plan accepts low/high/max, not the shared medium value."""
+        kwargs = self._capture(
+            self._env(
+                LANGCHAIN_MODEL_NAME="deepseek-v4.1-flash",
+                LANGCHAIN_REASONING_EFFORT=configured_effort,
+            )
+        )
+
+        assert kwargs["reasoning_effort"] == wire_effort
+        assert kwargs["temperature"] is None
+
+    @pytest.mark.parametrize("configured_effort", ["", "none"])
+    def test_deepseek_v41_flash_omits_default_effort(
+        self, configured_effort: str
+    ) -> None:
+        kwargs = self._capture(
+            self._env(
+                LANGCHAIN_MODEL_NAME="deepseek-v4-1-flash-260910",
+                LANGCHAIN_REASONING_EFFORT=configured_effort,
+            )
+        )
+
+        assert kwargs["reasoning_effort"] is None
+        assert kwargs["temperature"] == 0.0
+
+    def test_deepseek_v41_flash_payload_contains_mapped_output_config_effort(
+        self,
+    ) -> None:
+        """The mapped value must survive the real LangChain serializer."""
+        if importlib.util.find_spec("langchain_anthropic") is None:
+            pytest.skip("langchain-anthropic is not installed")
+        from langchain_core.messages import HumanMessage
+
+        with patch.dict(
+            os.environ,
+            self._env(
+                LANGCHAIN_MODEL_NAME="deepseek-v4.1-flash",
+                LANGCHAIN_REASONING_EFFORT="medium",
+            ),
+            clear=True,
+        ):
+            instance = build_llm()
+
+        payload = instance._get_request_payload([HumanMessage(content="hi")])
+        assert payload["output_config"]["effort"] == "high"
+
     def test_unset_effort_stays_absent(self) -> None:
         kwargs = self._capture(self._env())
 
@@ -444,6 +502,39 @@ class TestAnthropicNativeProvider:
 
         with patch.dict(
             os.environ, self._env(LANGCHAIN_REASONING_EFFORT="high"), clear=True
+        ):
+            with patch.object(llm_mod, "import_module", lambda _: old_module):
+                with patch.object(
+                    llm_mod,
+                    "_make_temperature_safe_anthropic",
+                    lambda _: _OldChatAnthropic,
+                ):
+                    build_llm()
+
+        assert captured["reasoning_effort"] is None
+        assert captured["temperature"] == 0.0
+
+    def test_deepseek_effort_is_not_sent_to_an_old_adapter_without_the_field(
+        self,
+    ) -> None:
+        """An old langchain-anthropic must fail safe for the DeepSeek route too."""
+        captured: dict[str, Any] = {}
+
+        class _OldChatAnthropic:
+            model_fields: dict[str, Any] = {}
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+        old_module = SimpleNamespace(ChatAnthropic=_OldChatAnthropic)
+
+        with patch.dict(
+            os.environ,
+            self._env(
+                LANGCHAIN_MODEL_NAME="deepseek-v4.1-flash",
+                LANGCHAIN_REASONING_EFFORT="high",
+            ),
+            clear=True,
         ):
             with patch.object(llm_mod, "import_module", lambda _: old_module):
                 with patch.object(

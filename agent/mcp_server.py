@@ -6,10 +6,10 @@ Zero API key required for HK/US/crypto research markets (yfinance, OKX,
 AKShare are free). Trading connector tools are profile-scoped and require the
 selected connector's own local app or OAuth setup.
 
-Surfaces 79 tools: skills, research goals, strategy discovery,
+Surfaces 81 tools: skills, research goals, strategy discovery,
 backtest/factor/options/pattern
 analysis, market data, fundamentals & capital-flow & news & discovery
-(get_fund_flow / get_dragon_tiger / get_northbound_flow / get_margin_trading /
+(get_fund_flow / get_dragon_tiger / get_northbound_flow / get_southbound_flow / get_margin_trading /
 get_block_trades / get_shareholder_count / get_lockup_expiry / get_sector_info /
 get_research_reports / get_stock_news / get_sec_filings /
 get_financial_statements / get_options_chain / get_stock_profile /
@@ -1190,6 +1190,37 @@ def read_file(path: str) -> str:
     return registry.execute("read_file", {"path": path})
 
 
+@mcp.tool
+def read_run_artifact(
+    run_dir: str,
+    artifact: str,
+    format: str = "rows",
+    offset: int = 0,
+    max_rows: int = 1000,
+    columns: _lenient_str_list_opt = None,
+) -> str:
+    """Read a backtest artifact as typed, paged JSON.
+
+    ``artifact`` accepts common aliases such as ``equity``, ``trades``,
+    ``metrics``, ``positions``, ``target_positions``, ``ohlcv:<CODE>`` and
+    ``run_card``. Other CSV/JSON files are accepted only when listed in the
+    run card manifest. ``format`` is ``rows`` (offset paging), ``downsample``
+    (equal-stride chart sample) or ``meta`` (shape and file metadata).
+    """
+    registry = _get_registry()
+    return registry.execute(
+        "read_run_artifact",
+        {
+            "run_dir": run_dir,
+            "artifact": artifact,
+            "format": format,
+            "offset": offset,
+            "max_rows": max_rows,
+            "columns": columns,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Strategy discovery tools
 # ---------------------------------------------------------------------------
@@ -1809,7 +1840,8 @@ def get_market_data(
         end_date: End date (YYYY-MM-DD).
         source: Data source. Prefer ``auto``; ``yahoo``/``yfinance`` serve
             Canada, US, and HK equities.
-        interval: Bar size (1m/5m/15m/30m/1H/4H/1D, default "1D").
+        interval: Bar size (1m/5m/15m/30m/1H/4H/1D/1W/1M, default "1D";
+            1W and 1M are built from daily bars).
         max_rows: Per-symbol row cap (default 250) so the response stays
             within the MCP token budget. A symbol exceeding it returns an
             even-stride downsample (every step-th bar, last bar pinned)
@@ -1973,6 +2005,23 @@ def get_northbound_flow(lookback_days: int = 30) -> str:
     """
     registry = _get_registry()
     return registry.execute("get_northbound_flow", {"lookback_days": lookback_days})
+
+
+@mcp.tool
+def get_southbound_flow(lookback_days: int = 30) -> str:
+    """Fetch Southbound (Stock-Connect) net capital flow into Hong Kong equities.
+
+    Returns the latest trading day's net buy plus recent daily history, split
+    into 港股通（沪） and 港股通（深） channels (units: 100M HKD, 亿) from the
+    Eastmoney datacenter, with HKEX official daily statistics as a keyless
+    fallback. Southbound is the only Stock-Connect direction whose daily net
+    buy is still officially disclosed. Read-only, no credentials; HK market only.
+
+    Args:
+        lookback_days: Trailing trading days of daily net-buy history to return.
+    """
+    registry = _get_registry()
+    return registry.execute("get_southbound_flow", {"lookback_days": lookback_days})
 
 
 @mcp.tool

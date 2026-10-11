@@ -9,6 +9,7 @@ from backtest.loaders.registry import VALID_SOURCES
 from src.agent.progress import emit_progress
 from src.agent.tools import BaseTool
 from src.core.runner import Runner
+from src.tools.backtest_summary import collect_ohlcv_paths, try_build_backtest_summary
 from src.tools.path_utils import safe_run_dir
 
 
@@ -64,14 +65,23 @@ def run_backtest(run_dir: str) -> str:
 
     emit_progress("finalize", message="collecting artifacts")
     artifacts_found = {name: str(path) for name, path in result.artifacts.items()}
-    return json.dumps({
+    envelope: dict[str, object] = {
         "status": "ok" if result.success else "error",
         "exit_code": result.exit_code,
         "stdout": result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout,
         "stderr": result.stderr[-2000:] if len(result.stderr) > 2000 else result.stderr,
         "artifacts": artifacts_found,
         "run_dir": run_dir,
-    }, ensure_ascii=False)
+    }
+    if result.success:
+        # Structured fields are additive and best-effort; legacy envelope keys
+        # stay unchanged when a run card is absent or malformed.
+        ohlcv_paths = collect_ohlcv_paths(run_path)
+        artifacts_found["ohlcv"] = ohlcv_paths
+        summary = try_build_backtest_summary(run_path, ohlcv_paths)
+        if summary is not None:
+            envelope["summary"] = summary
+    return json.dumps(envelope, ensure_ascii=False)
 
 
 class BacktestTool(BaseTool):

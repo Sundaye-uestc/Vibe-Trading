@@ -916,7 +916,7 @@ export interface ChannelPairingCommandResponse {
 
 export interface ChannelFieldHint {
   key: string;
-  type: "text" | "password" | "bool" | "list";
+  type: "text" | "password" | "number" | "bool" | "list";
   secret: boolean;
   required: boolean;
   help_key?: string | null;

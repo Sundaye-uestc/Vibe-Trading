@@ -45,7 +45,7 @@ class FieldHint(TypedDict):
 
     Attributes:
         key: Config key as the adapter serializes it (aliases already applied).
-        type: Widget type: ``text``, ``password``, ``bool`` or ``list``.
+        type: Widget type: ``text``, ``password``, ``number``, ``bool`` or ``list``.
         secret: Whether the value must never cross the wire in ``values``.
             For hand-written hints this flag is authoritative (see
             :func:`is_secret_key`).
@@ -130,8 +130,8 @@ def _qq_hints() -> list[FieldHint]:
         ("msg_format", "text", False, False),
         ("ack_message", "text", False, False),
         ("media_dir", "text", False, False),
-        ("download_chunk_size", "text", False, False),
-        ("download_max_bytes", "text", False, False),
+        ("download_chunk_size", "number", False, False),
+        ("download_max_bytes", "number", False, False),
     )
     return [
         {
@@ -157,35 +157,36 @@ def _email_hints() -> list[FieldHint]:
     specs = (
         ("consent_granted", "bool", False, False),
         ("imap_host", "text", False, True),
-        ("imap_port", "text", False, False),
+        ("imap_port", "number", False, False),
         ("imap_username", "text", False, True),
         ("imap_password", "password", True, True),
         ("imap_mailbox", "text", False, False),
         ("imap_use_ssl", "bool", False, False),
         ("imap_use_tls", "bool", False, False),
         ("smtp_host", "text", False, True),
-        ("smtp_port", "text", False, False),
+        ("smtp_port", "number", False, False),
         ("smtp_username", "text", False, True),
         ("smtp_password", "password", True, True),
+        ("pdf_password", "password", True, False),
         ("smtp_use_tls", "bool", False, False),
         ("smtp_use_ssl", "bool", False, False),
         ("verify_tls", "bool", False, False),
         ("from_address", "text", False, False),
         ("auto_reply_enabled", "bool", False, False),
-        ("poll_interval_seconds", "text", False, False),
+        ("poll_interval_seconds", "number", False, False),
         ("mark_seen", "bool", False, False),
         ("post_action", "text", False, False),
         ("post_action_move_mailbox", "text", False, False),
         ("post_action_expunge", "bool", False, False),
         ("post_action_ignore_skipped", "bool", False, False),
-        ("max_body_chars", "text", False, False),
+        ("max_body_chars", "number", False, False),
         ("subject_prefix", "text", False, False),
         ("allow_from", "list", False, False),
         ("verify_dkim", "bool", False, False),
         ("verify_spf", "bool", False, False),
         ("allowed_attachment_types", "list", False, False),
-        ("max_attachment_size", "text", False, False),
-        ("max_attachments_per_email", "text", False, False),
+        ("max_attachment_size", "number", False, False),
+        ("max_attachments_per_email", "number", False, False),
     )
     return [
         {
@@ -210,19 +211,19 @@ def _websocket_hints() -> list[FieldHint]:
     """
     specs = (
         ("host", "text", False, False),
-        ("port", "text", False, False),
+        ("port", "number", False, False),
         ("unix_socket_path", "text", False, False),
         ("path", "text", False, False),
         ("token", "password", True, False),
         ("token_issue_path", "text", False, False),
         ("token_issue_secret", "password", True, False),
-        ("token_ttl_s", "text", False, False),
+        ("token_ttl_s", "number", False, False),
         ("websocket_requires_token", "bool", False, False),
         ("allow_from", "list", False, False),
         ("streaming", "bool", False, False),
-        ("max_message_bytes", "text", False, False),
-        ("ping_interval_s", "text", False, False),
-        ("ping_timeout_s", "text", False, False),
+        ("max_message_bytes", "number", False, False),
+        ("ping_interval_s", "number", False, False),
+        ("ping_timeout_s", "number", False, False),
         ("ssl_certfile", "text", False, False),
         ("ssl_keyfile", "text", False, False),
     )
@@ -253,6 +254,8 @@ def _infer_type(key: str, value: Any, *, secret: bool) -> str:
         return "password"
     if isinstance(value, bool):
         return "bool"
+    if isinstance(value, (int, float)):
+        return "number"
     if isinstance(value, list):
         return "list"
     return "text"
@@ -273,7 +276,7 @@ def _derive_hints(name: str) -> list[FieldHint]:
         if key in _EXCLUDED_KEYS:
             continue
         if isinstance(value, dict):
-            # The generic form edits text/password/bool/list widgets only;
+            # The generic form edits text/password/number/bool/list widgets only;
             # a dict-valued field cannot be represented and would render as
             # "[object Object]". Such fields stay file-configured (their
             # values still travel in GET ``values``, the form just omits

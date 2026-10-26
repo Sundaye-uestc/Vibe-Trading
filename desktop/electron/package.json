@@ -58,12 +58,12 @@
         "to": "backend"
       },
       {
-        "from": "../../LICENSE",
-        "to": "licenses/Vibe-Trading-LICENSE.txt"
-      },
-      {
-        "from": "../../NOTICE",
-        "to": "licenses/Vibe-Trading-NOTICE.txt"
+        "from": "runtime/backend",
+        "to": "licenses",
+        "filter": [
+          "Vibe-Trading-LICENSE.txt",
+          "Vibe-Trading-NOTICE.txt"
+        ]
       }
     ],
     "win": {

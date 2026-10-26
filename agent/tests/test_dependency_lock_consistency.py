@@ -57,6 +57,29 @@ def test_every_locked_distribution_is_exactly_pinned_and_hashed(filename):
         assert hashes and all(re.fullmatch(r"sha256:[0-9a-f]{64}", digest) for digest in hashes), str(req)
 
 
+def test_windows_overlay_dependencies_are_present_in_hashed_lock():
+    """Cross-compilation must retain dependencies selected by native Windows."""
+    source = ROOT / "desktop/electron/requirements-windows.in"
+    environment = {**default_environment(), "sys_platform": "win32", "platform_system": "Windows",
+                   "platform_machine": "AMD64", "python_version": "3.12", "python_full_version": "3.12.10"}
+    locked = {canonicalize_name(req.name): next(iter(req.specifier)).version
+              for req, _ in _requirements(ROOT / LOCKS[1])}
+    includes = []
+    for raw in source.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("-r "):
+            includes.append((source.parent / line[3:].strip()).resolve())
+            continue
+        req = Requirement(line)
+        if req.marker is None or req.marker.evaluate(environment):
+            name = canonicalize_name(req.name)
+            assert name in locked, f"Windows lock is missing {req}"
+            assert req.specifier.contains(locked[name]), f"Windows lock does not satisfy {req}"
+    assert (ROOT / "agent/requirements.txt").resolve() in includes
+
+
 @pytest.mark.parametrize("filename,platform,python_version", [
     ("requirements-lock.txt", "linux", "3.11"),
     ("requirements-lock.txt", "linux", "3.12"),

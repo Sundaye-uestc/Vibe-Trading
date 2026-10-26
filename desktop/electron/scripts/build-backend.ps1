@@ -183,7 +183,7 @@ foreach ($artifact in $packagingArtifacts) {
 }
 
 # Install the Windows/Python 3.12 dependency lock with hash verification. The
-# lock is generated from agent/requirements.txt on Windows and deliberately
+# lock is generated from requirements-windows.in and deliberately
 # excludes optional channel extras such as [channels], [weixin], [telegram],
 # and [discord].
 & $BuildPython -m pip install `
@@ -333,14 +333,18 @@ Copy-Item `
     -Recurse `
     -Force
 
-Copy-Item `
-    -LiteralPath (Join-Path $repoRoot 'LICENSE') `
-    -Destination (Join-Path $runtimeRoot 'Vibe-Trading-LICENSE.txt') `
-    -Force
-Copy-Item `
-    -LiteralPath (Join-Path $repoRoot 'NOTICE') `
-    -Destination (Join-Path $runtimeRoot 'Vibe-Trading-NOTICE.txt') `
-    -Force
+# Personal forks may intentionally omit the root distribution notices. Keep
+# notices when supplied, without making those optional files a build input.
+# Third-party notices (including the report font's OFL) remain in site-packages.
+foreach ($notice in @('LICENSE', 'NOTICE')) {
+    $noticeSource = Join-Path $repoRoot $notice
+    $noticeTarget = Join-Path $runtimeRoot "Vibe-Trading-$notice.txt"
+    if (Test-Path -LiteralPath $noticeSource -PathType Leaf) {
+        Copy-Item -LiteralPath $noticeSource -Destination $noticeTarget -Force
+    } elseif (Test-Path -LiteralPath $noticeTarget -PathType Leaf) {
+        Remove-Item -LiteralPath $noticeTarget -Force
+    }
+}
 
 $runtimePython = Join-Path $runtimeRoot 'python.exe'
 & $BuildPython -m pip --python $runtimePython check

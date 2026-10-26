@@ -1,0 +1,7 @@
+# Windows embedded runtime: resolve with Python 3.12 and hash every package.
+-r ../../agent/requirements.txt
+
+# CCXT declares this dependency using platform_machine in "AMD64 ARM64".
+# Cross-platform resolvers can report x86_64 instead of Windows' AMD64 and
+# silently omit it; pip on the Windows runner correctly requires it.
+winloop==0.6.3; sys_platform == "win32"

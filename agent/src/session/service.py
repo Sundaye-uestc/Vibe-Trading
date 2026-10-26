@@ -44,6 +44,20 @@ _RECOVERY_ARG_MAX_CHARS = 2_000
 _RECOVERY_PREVIEW_MAX_CHARS = 1_000
 _RECOVERY_HISTORY_MAX_ENTRIES = 16
 _RECOVERY_HISTORY_MAX_CHARS = 5_000
+_COMPACT_RECOVERY_MAX_ENTRIES = 8
+_COMPACT_RECOVERY_MAX_CHARS = 12_000
+
+
+def _message_field(message: Any, name: str, default: Any = None) -> Any:
+    """Read persisted messages and legacy dictionary records consistently."""
+    if isinstance(message, dict):
+        return message.get(name, default)
+    return getattr(message, name, default)
+
+
+def _message_metadata(message: Any) -> Dict[str, Any]:
+    metadata = _message_field(message, "metadata")
+    return metadata if isinstance(metadata, dict) else {}
 
 
 #: Terminal attempt status -> SSE event name. Cancellation is its own event so
@@ -433,13 +447,19 @@ class SessionService:
         session = self.store.get_session(session_id)
         if session is None:
             raise ValueError(f"Session {session_id} not found")
-        with self._inflight_lock:
-            if session_id in self._inflight:
-                raise SessionBusyError(
-                    f"Session {session_id} already has a run in progress"
-                )
+        # Summarisation awaits a provider call. Hold the same claim as a turn
+        # so another send/compaction cannot change the boundary mid-summary.
+        self._reserve_session(session_id)
+        try:
+            return await self._compact_session(session)
+        finally:
+            self._release_session(session_id)
 
-        messages = self.store.get_messages(session_id, limit=500)
+    async def _compact_session(self, session: Session) -> Dict[str, Any]:
+        session_id = session.session_id
+        marker, messages = self._partition_compacted_messages(
+            self.store.get_messages(session_id, limit=None)
+        )
         # Keep the most recent turns verbatim so the model still sees the tail
         # it is actively working on; only the head is folded into the summary.
         keep_tail = 4
@@ -450,10 +470,6 @@ class SessionService:
             }
 
         head = messages[:-keep_tail]
-        head_ids = {
-            (m.message_id if hasattr(m, "message_id") else m.get("message_id"))
-            for m in head
-        }
 
         # Reuse the AgentLoop summarisation prompts so there is exactly one
         # handoff-summary format in the codebase.
@@ -471,38 +487,10 @@ class SessionService:
                 effort_override = raw_effort
         llm = ChatLLM(reasoning_effort=effort_override)
 
-        def _message_content(msg: Any) -> str:
-            if hasattr(msg, "content"):
-                return msg.content
-            return msg.get("content", "") if isinstance(msg, dict) else ""
-
-        def _message_role(msg: Any) -> str:
-            if hasattr(msg, "role"):
-                return msg.role
-            return msg.get("role", "user") if isinstance(msg, dict) else "user"
-
-        def _message_metadata(msg: Any) -> Dict[str, Any]:
-            if hasattr(msg, "metadata"):
-                metadata = msg.metadata
-            elif isinstance(msg, dict):
-                metadata = msg.get("metadata")
-            else:
-                metadata = None
-            return metadata if isinstance(metadata, dict) else {}
-
         # If an earlier compaction already folded a prefix, summarise that
         # summary plus the new turns instead of re-reading the raw prefix.
-        prior_summary = ""
-        serialize: list[Dict[str, Any]] = []
-        for msg in head:
-            metadata = _message_metadata(msg)
-            if metadata.get("type") == "compaction":
-                prior_summary = _message_content(msg)
-                continue
-            content = _message_content(msg)
-            role = _message_role(msg)
-            if content.strip() and role in ("user", "assistant"):
-                serialize.append({"role": role, "content": content})
+        prior_summary = self._compaction_content(marker) if marker else ""
+        serialize = [entry for msg in head if (entry := self._history_message(msg))]
 
         if not serialize and not prior_summary:
             return {"status": "noop", "reason": "nothing to compact"}
@@ -524,28 +512,27 @@ class SessionService:
                 return llm.chat([{"role": "user", "content": text}])
 
             response = await loop.run_in_executor(_AGENT_EXECUTOR, _run_summary)
-            if getattr(response, "content", ""):
-                summary = response.content
+            content = getattr(response, "content", "")
+            if not isinstance(content, str) or not content.strip():
+                # Do not advance ``through`` past a chunk the provider failed
+                # to summarise. The original log remains usable for a retry.
+                return {"status": "noop", "reason": "summarizer returned no content"}
+            summary = content
 
         if not summary:
             return {"status": "noop", "reason": "summarizer returned no content"}
 
-        through_id = None
-        for msg in reversed(head):
-            message_id = msg.message_id if hasattr(msg, "message_id") else msg.get("message_id")
-            if message_id in head_ids and _message_metadata(msg).get("type") != "compaction":
-                through_id = message_id
-                break
-
+        recovery_evidence = self._collect_compacted_evidence(marker, head)
         marker = Message(
             session_id=session_id,
             role="system",
             content=summary,
             metadata={
                 "type": "compaction",
-                "through": through_id,
+                "through": _message_field(head[-1], "message_id"),
                 "tokens_before": tokens_before,
                 "compacted_messages": len(serialize),
+                "recovery_evidence": recovery_evidence,
             },
         )
         self.store.append_message(marker)
@@ -590,7 +577,9 @@ class SessionService:
                 "attempt.started",
                 {"attempt_id": attempt.attempt_id, "started_at": wall_started_at},
             )
-            messages = self.store.get_messages(session.session_id)
+            # A compaction marker may be much older than the UI's 100-message
+            # page. Load it before applying the bounded model-history window.
+            messages = self.store.get_messages(session.session_id, limit=None)
             result = await self._run_with_agent(
                 attempt,
                 messages=messages,
@@ -1005,189 +994,175 @@ class SessionService:
             match["call_id"] = call_id
 
     @staticmethod
-    def _convert_messages_to_history(messages: list) -> list[Dict[str, Any]]:
-        """Convert Session messages into OpenAI-format history.
+    def _partition_compacted_messages(messages: list) -> tuple[Any | None, list]:
+        """Return the latest handoff plus its still-unfolded messages.
 
-        Keeps the readable ``[prev_run: {run_id}]`` marker instead of removing it
-        completely, and trims by character budget instead of a hard six-message cap
-        so the LLM can still see previous artifact paths and strategy content during
-        iterative updates.
-
-        Args:
-            messages: Session message list without the current turn.
-
-        Returns:
-            OpenAI-format messages trimmed from the newest items within the token budget.
+        Markers are appended *after* the retained tail. The ``through`` ID,
+        rather than the marker position, therefore defines the folded prefix.
+        Legacy markers without a resolvable boundary keep positional behavior.
         """
-        import re
-        from pathlib import Path
+        compact_at = next(
+            (index for index in range(len(messages) - 1, -1, -1)
+             if _message_metadata(messages[index]).get("type") == "compaction"),
+            -1,
+        )
+        if compact_at < 0:
+            return None, messages
+        marker = messages[compact_at]
+        through_id = _message_metadata(marker).get("through")
+        start = compact_at + 1
+        if through_id:
+            for index, message in enumerate(messages):
+                if _message_field(message, "message_id") == through_id:
+                    start = index + 1
+                    break
+        return marker, [
+            message for message in messages[start:]
+            if _message_metadata(message).get("type") != "compaction"
+        ]
 
-        def _shorten_run_dir(match: re.Match) -> str:
-            path_str = match.group(0).replace("Run directory:", "").strip()
-            run_id = Path(path_str).name if path_str else ""
+    @staticmethod
+    def _recovery_text(message: Any) -> str:
+        """Render the same bounded evidence for replay and summarisation."""
+        trail = _message_field(message, "tool_trail", [])
+        trail = [entry for entry in trail if isinstance(entry, dict)] if isinstance(trail, list) else []
+        metadata = _message_metadata(message)
+        context = metadata.get("recovery_context")
+        context = context if isinstance(context, dict) else {}
+        if _message_field(message, "role") != "assistant" or not (trail or context):
+            return ""
+        if metadata.get("status") == AttemptStatus.COMPLETED.value and not context:
+            return ""
+        lines = ["[Previous attempt evidence]"]
+        run_id = str(context.get("run_id") or metadata.get("run_id") or "")
+        if run_id:
+            lines.append(f"run_id={run_id}")
+        tool_count = context.get("tool_count")
+        if isinstance(tool_count, int) and tool_count > len(trail):
+            lines.append(f"tool_count={tool_count} (bounded preview)")
+        artifacts = context.get("artifacts")
+        if isinstance(artifacts, list) and artifacts:
+            lines.append("artifacts=" + ", ".join(str(item) for item in artifacts[:32]))
+        if len(trail) > _RECOVERY_HISTORY_MAX_ENTRIES:
+            entries = trail[:4] + trail[-(_RECOVERY_HISTORY_MAX_ENTRIES - 4):]
+            lines.append(f"tool_entries_omitted={len(trail) - len(entries)}")
+        else:
+            entries = trail
+        for entry in entries:
+            tool = str(entry.get("tool") or "unknown")
+            status = str(entry.get("status") or "unknown")
+            preview = str(entry.get("preview") or "").replace("\n", " ")[:500]
+            line = f"- {tool} [{status}]"
+            arguments = entry.get("arguments")
+            if isinstance(arguments, dict) and arguments:
+                try:
+                    encoded_args = json.dumps(arguments, ensure_ascii=False, default=str)[:400]
+                except (TypeError, ValueError):
+                    encoded_args = str(arguments)[:400]
+                line += f" args={encoded_args}"
+            if preview:
+                line += f": {preview}"
+            lines.append(line)
+        return "\n".join(lines)[:_RECOVERY_HISTORY_MAX_CHARS]
+
+    @classmethod
+    def _history_message(cls, message: Any) -> Dict[str, Any] | None:
+        """Normalise one transcript message without trimming its body."""
+        import re
+
+        role = _message_field(message, "role", "user")
+        if role not in ("user", "assistant"):
+            return None
+        content = _message_field(message, "content", "") or ""
+
+        def shorten_run_dir(match: re.Match) -> str:
+            run_id = Path(match.group(0).replace("Run directory:", "").strip()).name
             return f"[prev_run: {run_id}]" if run_id else ""
 
-        def _role(msg: Any) -> str:
-            if hasattr(msg, "role"):
-                return msg.role
-            return msg.get("role", "user") if isinstance(msg, dict) else "user"
+        content = re.sub(r"Run directory:\s*\S+", shorten_run_dir, content).strip()
+        evidence = cls._recovery_text(message)
+        if evidence:
+            content = f"{content}\n\n{evidence}".strip()
+        return {"role": role, "content": content} if content else None
 
-        def _content(msg: Any) -> str:
-            if hasattr(msg, "content"):
-                return msg.content
-            return msg.get("content", "") if isinstance(msg, dict) else ""
+    @classmethod
+    def _collect_compacted_evidence(cls, marker: Any, messages: list) -> list[dict]:
+        """Keep a bounded, deterministic recovery index alongside LLM prose.
 
-        def _metadata(msg: Any) -> Dict[str, Any]:
-            if hasattr(msg, "metadata"):
-                metadata = msg.metadata
-            elif isinstance(msg, dict):
-                metadata = msg.get("metadata")
-            else:
-                metadata = None
-            return metadata if isinstance(metadata, dict) else {}
-
-        def _tool_trail(msg: Any) -> list[Dict[str, Any]]:
-            """Return the bounded redacted tool trail attached to a reply."""
-            trail = getattr(msg, "tool_trail", None)
-            if trail is None and isinstance(msg, dict):
-                trail = msg.get("tool_trail")
-            if not isinstance(trail, list):
-                return []
-            return [item for item in trail if isinstance(item, dict)]
-
-        # ``messages`` includes the current turn as its last element; the prompt
-        # is passed separately, so the history stops before it.
-        body = messages[:-1]
-
-        # Honour the newest compaction marker.  ``compact_session`` appends the
-        # marker to the append-only log, after the retained tail, so locating
-        # the tail by marker position would drop those messages on the next
-        # turn.  The marker's ``through`` id is the durable boundary between
-        # the folded head and messages that must still be replayed.  Older
-        # markers (and hand-authored records) may not carry that id, so retain
-        # the positional fallback for those records.
-        compact_at = -1
-        for idx, msg in enumerate(body):
-            if _metadata(msg).get("type") == "compaction":
-                compact_at = idx
-        if compact_at >= 0:
-            marker = body[compact_at]
-            marker_metadata = _metadata(marker)
-            through_id = marker_metadata.get("through")
-            tail_start = None
-            if through_id:
-                for idx, msg in enumerate(body):
-                    if (
-                        (msg.message_id if hasattr(msg, "message_id") else msg.get("message_id"))
-                        == through_id
-                    ):
-                        tail_start = idx + 1
-                        break
-            leading = body[tail_start:] if tail_start is not None else body[compact_at + 1:]
-            summary = _content(marker).strip()
-        else:
-            leading = body
-            summary = ""
-
-        history = []
-        for msg in leading:
-            role = _role(msg)
-            content = _content(msg)
-            if not content.strip() or role not in ("user", "assistant"):
+        The summariser can omit precise run/artifact identities. Preserve the
+        recent evidence separately so repeated compaction does not erase them.
+        No file is reopened here: inputs are the already-redacted transcript.
+        """
+        previous = _message_metadata(marker).get("recovery_evidence", [])
+        evidence = [dict(entry) for entry in previous if isinstance(entry, dict)] if isinstance(previous, list) else []
+        for message in messages:
+            text = cls._recovery_text(message)
+            if not text:
                 continue
-            content = re.sub(r"Run directory:\s*\S+", _shorten_run_dir, content).strip()
-            # Failed or cancelled attempts still carry useful, redacted tool
-            # previews. Keep a bounded evidence ledger in the next turn's
-            # history so a recovery prompt can continue from collected data
-            # instead of assuming the failed attempt made no progress.
-            trail = _tool_trail(msg)
-            metadata = _metadata(msg)
-            recovery_context = metadata.get("recovery_context")
-            if not isinstance(recovery_context, dict):
-                recovery_context = {}
-            status_value = str(metadata.get("status") or "")
-            is_completed_reply = status_value == AttemptStatus.COMPLETED.value
-            # Legacy or hand-authored messages may not carry a status. Treat
-            # those as recoverable when a trail is present; only explicit
-            # completed replies skip the extra evidence appendix.
-            if role == "assistant" and (trail or recovery_context) and (
-                not is_completed_reply or recovery_context
-            ):
-                run_id = str(
-                    recovery_context.get("run_id")
-                    or metadata.get("run_id")
-                    or ""
-                )
-                lines = ["[Previous attempt evidence]"]
-                if run_id:
-                    lines.append(f"run_id={run_id}")
-                tool_count = recovery_context.get("tool_count")
-                if isinstance(tool_count, int) and tool_count > len(trail):
-                    lines.append(f"tool_count={tool_count} (bounded preview)")
-                artifacts = recovery_context.get("artifacts")
-                if isinstance(artifacts, list) and artifacts:
-                    lines.append("artifacts=" + ", ".join(str(item) for item in artifacts[:32]))
-                if len(trail) > _RECOVERY_HISTORY_MAX_ENTRIES:
-                    history_entries = trail[:4] + trail[-(_RECOVERY_HISTORY_MAX_ENTRIES - 4) :]
-                    lines.append(
-                        f"tool_entries_omitted={len(trail) - len(history_entries)}"
-                    )
-                else:
-                    history_entries = trail
-                for entry in history_entries:
-                    tool = str(entry.get("tool") or "unknown")
-                    status = str(entry.get("status") or "unknown")
-                    preview = str(entry.get("preview") or "").replace("\n", " ")[:500]
-                    line = f"- {tool} [{status}]"
-                    arguments = entry.get("arguments")
-                    if isinstance(arguments, dict) and arguments:
-                        try:
-                            encoded_args = json.dumps(
-                                arguments, ensure_ascii=False, default=str
-                            )[:400]
-                        except (TypeError, ValueError):
-                            encoded_args = str(arguments)[:400]
-                        line += f" args={encoded_args}"
-                    if preview:
-                        line += f": {preview}"
-                    lines.append(line)
-                content += "\n\n" + "\n".join(lines)[:_RECOVERY_HISTORY_MAX_CHARS]
-            if content:
-                history.append({"role": role, "content": content})
+            metadata = _message_metadata(message)
+            context = metadata.get("recovery_context")
+            context = context if isinstance(context, dict) else {}
+            artifacts = context.get("artifacts", [])
+            evidence.append({
+                "message_id": str(_message_field(message, "message_id", ""))[:128],
+                "run_id": str(context.get("run_id") or metadata.get("run_id") or "")[:128],
+                "artifacts": [str(item)[:256] for item in artifacts[:16]] if isinstance(artifacts, list) else [],
+                "text": text,
+            })
+        evidence = evidence[-_COMPACT_RECOVERY_MAX_ENTRIES:]
+        # Keep complete recent records preferentially. A pathological legacy
+        # record may contain escaped control characters, so enforce the budget
+        # on the serialized representation, not only the displayed text.
+        while len(json.dumps(evidence, ensure_ascii=False)) > _COMPACT_RECOVERY_MAX_CHARS:
+            if len(evidence) > 1:
+                evidence.pop(0)
+            elif evidence and len(str(evidence[0].get("text", ""))) > 100:
+                evidence[0]["text"] = str(evidence[0]["text"])[:len(str(evidence[0]["text"])) // 2]
+            else:
+                evidence = []
+        return evidence
 
-        # Trim from the newest messages within a character budget of roughly 3000 tokens.
-        MAX_HISTORY_CHARS = 12000
+    @staticmethod
+    def _compaction_content(marker: Any) -> str:
+        summary = str(_message_field(marker, "content", "") or "").strip()
+        evidence = _message_metadata(marker).get("recovery_evidence", [])
+        if isinstance(evidence, list):
+            # Recent failed runs take precedence within the handoff budget.
+            excerpts = [str(entry.get("text", "")) for entry in reversed(evidence) if isinstance(entry, dict)]
+            appendix = "\n\n".join(excerpts)[:_RECOVERY_HISTORY_MAX_CHARS]
+            if appendix:
+                summary += "\n\n" + appendix
+        return summary.strip()
+
+    @classmethod
+    def _convert_messages_to_history(cls, messages: list) -> list[Dict[str, Any]]:
+        """Replay the newest handoff and a bounded tail, excluding the prompt."""
+        # The current prompt is passed separately to AgentLoop. Locate the
+        # marker before trimming so long conversations cannot silently lose it.
+        marker, leading = cls._partition_compacted_messages(messages[:-1])
+        history = [entry for message in leading if (entry := cls._history_message(message))]
+        max_history_chars = 12000
         total_chars = 0
         trimmed: list = []
-        for msg in reversed(history):
-            content = msg.get("content", "")
-            remaining = MAX_HISTORY_CHARS - total_chars
+        for message in reversed(history):
+            content = message["content"]
+            remaining = max_history_chars - total_chars
             if len(content) <= remaining:
-                trimmed.append(msg)
+                trimmed.append(message)
                 total_chars += len(content)
                 continue
-            # A single oversized message must not wipe the whole window: when
-            # nothing has been kept yet, the newest turn survives truncated
-            # rather than the agent starting with no history at all.
             if not trimmed:
-                trimmed.append({**msg, "content": content[:remaining] + "\n[... truncated]"})
+                trimmed.append({**message, "content": content[:remaining] + "\n[... truncated]"})
             break
         replayed = list(reversed(trimmed))
+        summary = cls._compaction_content(marker) if marker else ""
         if summary:
-            # The summary is the oldest entry and would be the first thing the
-            # newest-first trim drops; pin it ahead of the trimmed tail so a
-            # compaction survives the budget it was created to relieve.
-            replayed.insert(
-                0,
-                {
-                    # A "user" block mirrors AgentLoop._auto_compact's rebuild,
-                    # which keeps the handoff out of the system slot so
-                    # providers that only tolerate one leading system message
-                    # still accept the replay.
-                    "role": "user",
-                    "content": f"[Conversation compressed — handoff summary]\n\n{summary}",
-                },
-            )
+            # Pin the handoff outside the newest-first tail budget. A user
+            # block also works with providers requiring one leading system.
+            replayed.insert(0, {
+                "role": "user",
+                "content": f"[Conversation compressed — handoff summary]\n\n{summary}",
+            })
         return replayed
 
     @staticmethod

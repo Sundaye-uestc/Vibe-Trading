@@ -99,6 +99,9 @@ include = ["src*", "backtest*", "cli*", "evals*"]
 
 [tool.setuptools.package-data]
 "src" = [
+    "channels/fonts/*.ttf",
+    "channels/fonts/*.txt",
+    "channels/fonts/*.md",
     "skills/**/*.md",
     "skills/**/*.yaml",
     "skills/**/*.json",

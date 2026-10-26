@@ -93,3 +93,40 @@ def test_protected_pdf_without_password_fails_closed() -> None:
             channel="email", chat_id="reader@example.test", content="Secret",
             metadata={"delivery_format": "pdf", "protect_pdf": True},
         )))
+
+
+@pytest.mark.parametrize("engine_unavailable", [True, False])
+def test_pdf_fallback_embeds_readable_chinese_in_all_text_styles(monkeypatch, engine_unavailable):
+    from pypdf import PdfReader
+    from reportlab.pdfbase import pdfmetrics
+    from src.channels import rich_text
+
+    class BrokenEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def write_pdf(self):
+            raise OSError("native rendering library unavailable")
+
+    monkeypatch.setattr(rich_text, "_WEASYPRINT_HTML", False if engine_unavailable else BrokenEngine)
+    text = "# 中文研究报告\n\n**南向资金**与繁體數據摘要。\n\n`证券代码000001`\n\n```\n回测收益率=12.5%\n```"
+    pdf = render_email_pdf(text)
+    reader = PdfReader(BytesIO(pdf))
+    extracted = "\n".join(page.extract_text() for page in reader.pages)
+    for expected in ["中文研究报告", "南向资金", "繁體數據摘要", "证券代码000001", "回测收益率=12.5%"]:
+        assert expected in extracted
+    # Unicode extraction alone can pass even when the actual glyph is missing.
+    face = pdfmetrics.getFont(rich_text._PDF_FONT_NAME).face
+    assert all(face.charToGlyph.get(ord(char), 0) != 0 for char in text if ord(char) > 127)
+    descriptors = [
+        font.get_object().get("/FontDescriptor")
+        for page in reader.pages for font in page["/Resources"]["/Font"].values()
+    ]
+    embedded = [item.get_object() for item in descriptors if item]
+    assert any("/FontFile2" in item and "VibeReportCJK" in str(item["/FontName"]) for item in embedded)
+
+
+def test_html_email_does_not_reference_packaged_font_path():
+    html = render_email_html("# 中文报告")
+    assert "file:" not in html
+    assert ".ttf" not in html

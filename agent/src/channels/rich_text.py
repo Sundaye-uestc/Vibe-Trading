@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from threading import Lock
 from xml.sax.saxutils import escape
 
 import nh3
@@ -21,6 +21,9 @@ from mistune import create_markdown
 logger = logging.getLogger(__name__)
 
 _WEASYPRINT_HTML = None
+_PDF_FONT_PATH = Path(__file__).with_name("fonts") / "VibeReportCJK-Regular.ttf"
+_PDF_FONT_NAME = "VibeReportCJK"
+_PDF_FONT_LOCK = Lock()
 _MARKDOWN = create_markdown(escape=True, plugins=["table", "strikethrough", "url"])
 _ALLOWED_TAGS = {
     "p", "a", "strong", "em", "del", "code", "pre", "blockquote",
@@ -74,25 +77,37 @@ def _render_pdf_reportlab(text: str) -> bytes:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
+    # Bundle a real font instead of relying on viewer-side CJK substitution.
+    # Registration is process-wide; scheduled jobs may render concurrently.
+    with _PDF_FONT_LOCK:
+        if _PDF_FONT_NAME not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(_PDF_FONT_NAME, str(_PDF_FONT_PATH)))
+            pdfmetrics.registerFontFamily(
+                _PDF_FONT_NAME, normal=_PDF_FONT_NAME, bold=_PDF_FONT_NAME,
+                italic=_PDF_FONT_NAME, boldItalic=_PDF_FONT_NAME,
+            )
     styles = getSampleStyleSheet()
     body = ParagraphStyle("vibe-report-body", parent=styles["BodyText"], fontSize=10,
-                          leading=14, spaceAfter=5, wordWrap="CJK")
+                          leading=14, spaceAfter=5, wordWrap="CJK", fontName=_PDF_FONT_NAME)
     heading = {level: ParagraphStyle(
         f"vibe-report-h{level}", parent=styles[f"Heading{min(level, 3)}"],
         fontSize=max(12, 22 - level * 2), leading=max(15, 26 - level * 2),
-        spaceBefore=8, spaceAfter=5, keepWithNext=True,
+        spaceBefore=8, spaceAfter=5, keepWithNext=True, fontName=_PDF_FONT_NAME,
+        wordWrap="CJK",
     ) for level in range(1, 7)}
     code = ParagraphStyle("vibe-report-code", parent=body, backColor=colors.HexColor("#f3f4f6"),
-                          leftIndent=8, rightIndent=8, fontName="Courier")
+                          leftIndent=8, rightIndent=8)
 
     def inline(value: str) -> str:
         value = escape(value)
         value = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", value)
         value = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", value)
         value = re.sub(r"__([^_]+)__", r"<b>\1</b>", value)
-        value = re.sub(r"`([^`]+)`", r"<font name='Courier'>\1</font>", value)
+        value = re.sub(r"`([^`]+)`", rf"<font name='{_PDF_FONT_NAME}'>\1</font>", value)
         return value
 
     story = []
@@ -134,7 +149,13 @@ def render_email_pdf(text: str) -> bytes:
             _WEASYPRINT_HTML = False
     if _WEASYPRINT_HTML is not False:
         try:
-            return _WEASYPRINT_HTML(string=render_email_html(text)).write_pdf()
+            # PDF-only CSS: do not leak a local font URI into HTML emails.
+            font_css = (
+                f"@font-face {{ font-family: 'Vibe Report CJK'; src: url('{_PDF_FONT_PATH.as_uri()}'); }}"
+                "body, pre, code { font-family: 'Vibe Report CJK', sans-serif; }"
+            )
+            html = render_email_html(text).replace("</style>", font_css + "</style>", 1)
+            return _WEASYPRINT_HTML(string=html).write_pdf()
         except Exception:
             logger.exception("WeasyPrint failed; falling back to reportlab")
     return _render_pdf_reportlab(text)

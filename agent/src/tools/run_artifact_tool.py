@@ -35,7 +35,7 @@ from typing import Any
 from src.agent.tools import BaseTool
 from src.tools.path_utils import safe_run_dir
 
-# Serialized-envelope budget in characters. MCP clients truncate large tool
+# Serialized-envelope budget in UTF-8 bytes. MCP clients truncate large tool
 # results (50KB is a common default; raised harness limits reach 256KB); 120K
 # keeps a full page intact under the raised limit while leaving framing room.
 _BYTE_BUDGET = 120_000
@@ -246,13 +246,24 @@ def _read_csv(path: Path) -> tuple[list[str], list[list[Any]]]:
         except StopIteration:
             return [], []
         width = len(header)
+        identifiers = [_is_identifier_column(column) for column in header]
         rows: list[list[Any]] = []
         for record in reader:
             if not record:
                 continue
             aligned = record[:width] + [""] * (width - len(record))
-            rows.append([_coerce_value(cell) for cell in aligned])
+            rows.append([
+                cell if identifier else _coerce_value(cell)
+                for cell, identifier in zip(aligned, identifiers)
+            ])
     return header, rows
+
+
+def _is_identifier_column(column: str) -> bool:
+    """Identifiers are text even when a CSV exporter writes only digits."""
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", column.strip())
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized.lower()).strip("_")
+    return normalized.split("_")[-1] in {"code", "symbol", "ticker", "id", "isin", "cusip", "sedol"}
 
 
 def _project(
@@ -296,6 +307,24 @@ def _serialize(envelope: dict[str, Any]) -> str:
     return json.dumps(envelope, ensure_ascii=False)
 
 
+def _payload_size(payload: str) -> int:
+    return len(payload.encode("utf-8"))
+
+
+def _budget_error(budget: int) -> str:
+    """Fail explicitly when even one whole record cannot fit; never loop a cursor."""
+    payload = _error(
+        "A complete artifact record or its metadata exceeds the output byte budget.",
+        "Use format='meta' to inspect the artifact, select fewer columns (CSV columns or JSON object fields), "
+        "or split oversized nested JSON values into smaller artifacts. No partial record was returned.",
+    )
+    if _payload_size(payload) <= budget:
+        return payload
+    # Only artificially tiny test/operator budgets reach this branch.
+    minimal = '{"ok":false}'
+    return minimal if len(minimal) <= budget else "{}"
+
+
 def _fit_rows_payload(
     base: dict[str, Any],
     page: list[list[Any]],
@@ -309,8 +338,8 @@ def _fit_rows_payload(
     overflow (then one further) so wide records still converge, keeping
     ``returned_rows`` / ``truncated`` / ``next_offset`` honest — a shrunk page
     always reports ``truncated: true`` with the resume offset, so the tail is
-    never dropped silently. The payload stays valid JSON even when a single
-    row alone exceeds the budget.
+    never dropped silently. A single oversized row returns an explicit error
+    instead of exceeding the budget or advertising a cursor that cannot move.
     """
     count = len(page)
     while True:
@@ -325,9 +354,12 @@ def _fit_rows_payload(
             "next_offset": offset + returned if truncated else None,
         }
         payload = _serialize(envelope)
-        if len(payload) <= budget or count <= 1:
+        size = _payload_size(payload)
+        if size <= budget:
             return payload
-        count = max(1, min(count - 1, int(count * budget / len(payload))))
+        if count <= 1:
+            return _budget_error(budget)
+        count = max(1, min(count - 1, int(count * budget / size)))
 
 
 def _fit_downsample_payload(
@@ -358,32 +390,107 @@ def _fit_downsample_payload(
             },
         }
         payload = _serialize(envelope)
-        if len(payload) <= budget or target <= 2:
+        size = _payload_size(payload)
+        if size <= budget:
             return payload
-        target = max(2, min(target - 1, int(target * budget / len(payload))))
+        if target <= 2:
+            return _budget_error(budget)
+        target = max(2, min(target - 1, int(target * budget / size)))
 
 
-def _read_json_artifact(path: Path, artifact: str, run_dir: str) -> str:
-    """Parse and envelope a small JSON artifact (run_card or manifest-listed).
+def _read_json_artifact(
+    path: Path,
+    artifact: str,
+    run_dir: str,
+    *,
+    format: str,
+    offset: int,
+    max_rows: int,
+    columns: list[str] | None,
+    entry: dict[str, Any] | None,
+) -> str:
+    """Page whole top-level JSON elements/fields, preserving the ``json`` key.
 
-    Returns the ``{"artifact", "run_dir", "json", "size_bytes"}`` envelope, or
-    the error envelope when the file is corrupt — never partial JSON.
+    Small, complete JSON reads retain their original envelope. Larger arrays
+    and objects carry the same honest paging metadata as CSV pages. Nested
+    values are indivisible: an oversized field is refused rather than silently
+    clipped. ``meta`` never includes the actual JSON values.
     """
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         return _error(
             f"{artifact} is not valid JSON: {exc}",
             f"Delete or regenerate {path.name}; this tool never returns partial JSON.",
         )
-    return _serialize(
-        {
-            "artifact": artifact,
-            "run_dir": run_dir,
-            "json": parsed,
-            "size_bytes": path.stat().st_size,
-        }
-    )
+    if columns is not None:
+        if not isinstance(parsed, dict):
+            return _error("JSON columns projection requires a top-level object", "Omit columns for an array or scalar.")
+        unknown = [key for key in columns if key not in parsed]
+        if unknown:
+            return _error("Unknown JSON object field requested", "Use format='meta' to inspect the available columns.")
+        parsed = {key: parsed[key] for key in columns}
+
+    is_object = isinstance(parsed, dict)
+    is_array = isinstance(parsed, list)
+    items = list(parsed.items()) if is_object else parsed if is_array else [parsed]
+    total = len(items)
+    kind = "object" if is_object else "array" if is_array else "scalar"
+    base = {"artifact": artifact, "run_dir": run_dir, "size_bytes": path.stat().st_size}
+    if format == "meta":
+        meta = {**base, "json_type": kind}
+        if is_object:
+            meta["columns"] = list(parsed)
+        return _meta_envelope(meta, total, path, entry)
+
+    budget = _BYTE_BUDGET
+    if offset == 0 and total <= max_rows:
+        complete = _serialize({**base, "json": parsed})
+        if _payload_size(complete) <= budget:
+            return complete
+
+    def page_value(selected: list[Any]) -> Any:
+        if is_object:
+            return dict(selected)
+        if is_array:
+            return selected
+        return selected[0] if selected else None
+
+    if format == "downsample":
+        target = max_rows
+        while True:
+            indices, stride = _downsample_indices(total, target)
+            selected = [items[index] for index in indices]
+            envelope = {
+                **base, "json": page_value(selected), "json_type": kind,
+                "total_rows": total, "offset": 0, "returned_rows": len(selected),
+                "truncated": False, "next_offset": None,
+                "downsample": {"stride": stride, "pinned_last": True, "algorithm": "every-nth", "total_rows": total},
+            }
+            payload = _serialize(envelope)
+            size = _payload_size(payload)
+            if size <= budget:
+                return payload
+            if target <= 2:
+                return _budget_error(budget)
+            target = max(2, min(target - 1, int(target * budget / size)))
+
+    count = min(max_rows, max(0, total - offset))
+    while True:
+        selected = items[offset:offset + count]
+        truncated = offset + len(selected) < total
+        payload = _serialize({
+            **base, "json": page_value(selected), "json_type": kind,
+            "total_rows": total, "offset": offset, "returned_rows": len(selected),
+            "truncated": truncated, "next_offset": offset + len(selected) if truncated else None,
+            "downsample": None,
+        })
+        size = _payload_size(payload)
+        if size <= budget:
+            return payload
+        if count <= 1:
+            return _budget_error(budget)
+        count = max(1, min(count - 1, int(count * budget / size)))
 
 
 def _meta_envelope(
@@ -411,7 +518,22 @@ def _meta_envelope(
         declared = entry.get("size_bytes")
         if isinstance(declared, int) and not isinstance(declared, bool):
             envelope["manifest_size_bytes"] = declared
-    return _serialize(envelope)
+    payload = _serialize(envelope)
+    if _payload_size(payload) <= _BYTE_BUDGET:
+        return payload
+    # A wide schema must not make a shape-only read unbounded either.
+    columns = envelope.get("columns")
+    if isinstance(columns, list):
+        envelope["total_columns"] = len(columns)
+        envelope["columns_truncated"] = True
+        count = len(columns)
+        while count:
+            count //= 2
+            envelope["columns"] = columns[:count]
+            payload = _serialize(envelope)
+            if _payload_size(payload) <= _BYTE_BUDGET:
+                return payload
+    return _budget_error(_BYTE_BUDGET)
 
 
 def read_run_artifact(
@@ -433,11 +555,12 @@ def read_run_artifact(
             artifacts manifest (e.g. ``artifacts/validation.json``).
         format: ``rows`` (offset paging), ``downsample`` (equal-stride sample,
             first+last pinned; ``offset`` ignored) or ``meta`` (shape only).
-            JSON artifacts return their parsed object regardless of format.
+            JSON pages select whole top-level fields/elements, retaining the
+            ``json`` field; metadata never includes their values.
         offset: First row index for ``rows`` mode; negative values refused.
         max_rows: Page/sample size, clamped to ``[1, 5000]``.
-        columns: Optional projection applied before budget fitting; an unknown
-            name is refused with the valid column list.
+        columns: Optional CSV columns or top-level JSON object fields to select.
+            Nested JSON values stay intact; oversized individual values fail.
 
     Returns:
         JSON string.  Success envelopes carry no ``ok``/``status`` field;
@@ -469,13 +592,10 @@ def read_run_artifact(
             "'artifacts' map, or use format='meta' on an artifact that exists.",
         )
 
-    if path.suffix.lower() == ".json":
-        return _read_json_artifact(path, artifact, run_dir)
-
     try:
         offset = int(offset)
         max_rows = int(max_rows)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return _error(
             "offset and max_rows must be integers",
             "Omit them for the defaults (offset=0, max_rows=1000).",
@@ -486,6 +606,12 @@ def read_run_artifact(
             "Start at offset=0 and follow next_offset.",
         )
     max_rows = max(1, min(max_rows, _MAX_ROWS_CEILING))
+
+    if path.suffix.lower() == ".json":
+        return _read_json_artifact(
+            path, artifact, run_dir, format=format, offset=offset,
+            max_rows=max_rows, columns=columns, entry=entry,
+        )
 
     try:
         header, rows = _read_csv(path)
@@ -537,7 +663,9 @@ class RunArtifactTool(BaseTool):
         "shape only (format='meta', plus the manifest sha256 when listed). "
         "Artifacts: equity, trades, metrics, positions, target_positions, "
         "ohlcv:<CODE>, run_card, or any run_dir-relative .csv/.json path "
-        "listed in the run_card.json artifacts manifest. Values arrive typed "
+        "listed in the run_card.json artifacts manifest. JSON pages preserve "
+        "whole top-level fields/elements in the json field; oversized nested "
+        "values are refused. CSV identifier columns remain strings. Values arrive typed "
         "(int/float/null/string), never as raw CSV text, and every page stays "
         "within a bounded byte budget."
     )
@@ -576,7 +704,7 @@ class RunArtifactTool(BaseTool):
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional column projection; unknown names are refused "
+                    "Optional CSV column or top-level JSON object field projection; unknown names are refused "
                     "with the valid list"
                 ),
             },

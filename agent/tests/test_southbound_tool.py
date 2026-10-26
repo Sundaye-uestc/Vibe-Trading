@@ -78,18 +78,103 @@ class TestEastmoneyEnvelope:
         payload = json.loads(text)
         assert payload["data"]["lookback_days"] == sb._MAX_LOOKBACK_DAYS
 
-    def test_one_channel_missing_leaves_none_and_partial_total(self):
+    def test_one_channel_missing_marks_total_unknown_and_attempts_hkex(self):
         def fake(url: str, *, params: dict):
             if '"002"' in params["filter"]:
                 return _em_rows({"2026-09-17": 2502.39})
             return {"result": {"data": []}}
 
-        with patch.object(sb.eastmoney_client, "get_json", side_effect=fake):
+        with (
+            patch.object(sb.eastmoney_client, "get_json", side_effect=fake),
+            patch.object(sb, "_fetch_hkex_latest", return_value=None) as fallback,
+        ):
             text = sb.SouthboundFlowTool().execute(lookback_days=5)
-        row = json.loads(text)["data"]["history"][-1]
+        payload = json.loads(text)
+        row = payload["data"]["history"][-1]
         assert row["shanghai_connect"] == 25.0239
         assert row["shenzhen_connect"] is None
-        assert row["total"] == 25.0239
+        assert row["total"] is None
+        assert row["partial"] is True
+        assert row["missing_channels"] == ["shenzhen_connect"]
+        assert payload["partial"] is True
+        assert payload["warnings"]
+        fallback.assert_called_once_with()
+
+    def test_partial_data_is_completed_only_from_the_same_trading_day(self):
+        def fake(channel: str, days: int):
+            return [{"TRADE_DATE": "2026-09-17", "NET_DEAL_AMT": 2500}] if channel == "002" else []
+
+        snapshot = sb._flow_row("2026-09-17", 26.0, 10.0)
+        with (
+            patch.object(sb, "_fetch_eastmoney_channel", side_effect=fake),
+            patch.object(sb, "_fetch_hkex_latest", return_value=snapshot),
+        ):
+            payload = json.loads(sb.SouthboundFlowTool().execute())
+        row = payload["data"]["realtime"]
+        assert row["shanghai_connect"] == 25.0  # existing observation is not overwritten
+        assert row["shenzhen_connect"] == 10.0
+        assert row["total"] == 35.0
+        assert row["partial"] is False
+        assert payload["partial"] is False
+        assert payload["source"] == "eastmoney+hkex"
+        assert row["channel_sources"] == {"shanghai_connect": "eastmoney", "shenzhen_connect": "hkex"}
+
+    def test_different_day_snapshot_cannot_fill_a_missing_channel(self):
+        def fake(channel: str, days: int):
+            return [{"TRADE_DATE": "2026-09-17", "NET_DEAL_AMT": 2500}] if channel == "002" else []
+
+        with (
+            patch.object(sb, "_fetch_eastmoney_channel", side_effect=fake),
+            patch.object(sb, "_fetch_hkex_latest", return_value=sb._flow_row("2026-09-18", 26.0, 10.0)),
+        ):
+            payload = json.loads(sb.SouthboundFlowTool().execute())
+        row = payload["data"]["realtime"]
+        assert row["trade_date"] == "2026-09-17"
+        assert row["total"] is None
+        assert row["shenzhen_connect"] is None
+        assert payload["source"] == "eastmoney"
+        assert payload["partial"] is True
+
+    def test_one_channel_exception_preserves_the_other_observation(self):
+        def fake(channel: str, days: int):
+            if channel == "004":
+                raise RuntimeError("channel unavailable")
+            return [{"TRADE_DATE": "2026-09-17", "NET_DEAL_AMT": 2500}]
+
+        with (
+            patch.object(sb, "_fetch_eastmoney_channel", side_effect=fake),
+            patch.object(sb, "_fetch_hkex_latest", return_value=None),
+        ):
+            payload = json.loads(sb.SouthboundFlowTool().execute())
+        assert payload["data"]["realtime"]["shanghai_connect"] == 25.0
+        assert payload["data"]["realtime"]["total"] is None
+        assert any("channel unavailable" in warning for warning in payload["warnings"])
+
+    def test_nonfinite_value_is_missing_but_zero_is_a_valid_observation(self):
+        with patch.object(sb, "_fetch_eastmoney_channel", side_effect=[
+            [{"TRADE_DATE": "2026-09-17", "NET_DEAL_AMT": "nan"}],
+            [{"TRADE_DATE": "2026-09-17", "NET_DEAL_AMT": 0}],
+        ]):
+            row = sb._merge_eastmoney(1)[0]
+        assert row["shanghai_connect"] is None
+        assert row["shenzhen_connect"] == 0
+        assert row["total"] is None
+
+    def test_malformed_hkex_fallback_keeps_usable_partial_data(self):
+        def fake(channel: str, days: int):
+            return [{"TRADE_DATE": "2026-09-17", "NET_DEAL_AMT": 2500}] if channel == "002" else []
+
+        malformed = 'tabData = [{"date":"2026-09-17","market":"SSE Southbound","content":[{"table":{"schema":7}}]}];'
+        response = MagicMock(status_code=200, text=malformed)
+        with (
+            patch.object(sb, "_fetch_eastmoney_channel", side_effect=fake),
+            patch.object(sb.requests, "get", return_value=response),
+        ):
+            payload = json.loads(sb.SouthboundFlowTool().execute())
+        assert payload["source"] == "eastmoney"
+        assert payload["partial"] is True
+        assert payload["data"]["realtime"]["shanghai_connect"] == 25.0
+        assert payload["data"]["realtime"]["total"] is None
 
 
 class TestHkexFallback:
@@ -209,8 +294,40 @@ class TestHkexFallback:
         assert "eastmoney datacenter" in payload["error"]
         assert "HKEX" in payload["error"]
 
+    def test_partial_official_fallback_is_explicit_and_has_no_total(self):
+        sections = json.loads(self._HKEX_JS.removeprefix("tabData = ").rstrip(";"))
+        js = "tabData = " + json.dumps(sections[:1])
+        with (
+            patch.object(sb.eastmoney_client, "get_json", return_value={"result": {"data": []}}),
+            patch.object(sb.requests, "get", return_value=self._mock_response(200, js)),
+        ):
+            payload = json.loads(sb.SouthboundFlowTool().execute())
+        assert payload["source"] == "hkex"
+        assert payload["partial"] is True
+        assert payload["data"]["realtime"]["total"] is None
+        assert any("Incomplete southbound data" in warning for warning in payload["warnings"])
+
 
 class TestHkexParser:
+    def test_missing_channel_cannot_become_the_market_total(self):
+        sections = json.loads(TestHkexFallback._HKEX_JS.removeprefix("tabData = ").rstrip(";"))
+        js = "tabData = " + json.dumps(sections[:1])
+        row = sb._parse_hkex_report(js)
+        assert row["shanghai_connect"] == 25.0239
+        assert row["shenzhen_connect"] is None
+        assert row["total"] is None
+        assert row["partial"] is True
+
+    def test_sections_for_different_days_are_never_added_together(self):
+        sections = json.loads(TestHkexFallback._HKEX_JS.removeprefix("tabData = ").rstrip(";"))
+        sections[1]["date"] = "2026-09-18"
+        row = sb._parse_hkex_report("tabData = " + json.dumps(sections))
+        assert row["trade_date"] == "2026-09-18"
+        assert row["shanghai_connect"] is None
+        assert row["shenzhen_connect"] == 8.6076
+        assert row["total"] is None
+        assert row["partial"] is True
+
     def test_missing_southbound_sections_returns_none(self):
         js = (
             "tabData = ["

@@ -36,6 +36,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import math
 from typing import Any
 
 import requests
@@ -75,7 +76,8 @@ def _coerce_float(value: Any) -> float | None:
     if value in (None, "", "-", "null"):
         return None
     try:
-        return float(value)
+        number = float(value)
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
 
@@ -83,7 +85,37 @@ def _coerce_float(value: Any) -> float | None:
 def _trade_date(raw: Any) -> str | None:
     """Normalize an Eastmoney ``TRADE_DATE`` cell to ``YYYY-MM-DD``."""
     text = str(raw or "").strip()
-    return text[:10] if len(text) >= 10 else None
+    try:
+        return dt.date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        return None
+
+
+def _flow_row(date: str, shanghai: float | None, shenzhen: float | None) -> dict[str, Any]:
+    """Never present the available leg of an incomplete flow as its total."""
+    values = {"shanghai_connect": shanghai, "shenzhen_connect": shenzhen}
+    missing = [channel for channel, value in values.items() if value is None]
+    return {
+        "trade_date": date,
+        **values,
+        "total": None if missing else round(shanghai + shenzhen, 4),
+        "partial": bool(missing),
+        "missing_channels": missing,
+    }
+
+
+def _partial_warnings(history: list[dict[str, Any]]) -> list[str]:
+    missing = [row for row in history if row["partial"]]
+    if not missing:
+        return []
+    details = "; ".join(
+        f"{row['trade_date']}: {', '.join(row['missing_channels'])}"
+        for row in missing[:5]
+    )
+    return [
+        f"Incomplete southbound data on {len(missing)} trading day(s); total is unknown "
+        f"where a channel is missing ({details})."
+    ]
 
 
 def _clamp_lookback(value: Any) -> int:
@@ -133,11 +165,12 @@ def _fetch_eastmoney_channel(mutual_type: str, days: int) -> list[dict[str, Any]
     return rows if isinstance(rows, list) else []
 
 
-def _merge_eastmoney(days: int) -> list[dict[str, Any]]:
+def _merge_eastmoney(days: int, errors: list[str] | None = None) -> list[dict[str, Any]]:
     """Fetch both 港股通 channels and merge them into ascending daily rows.
 
     Args:
         days: Trailing trading days per channel.
+        errors: Optional list receiving per-channel fetch failures.
 
     Returns:
         Ascending list of ``{trade_date, shanghai_connect, shenzhen_connect,
@@ -146,7 +179,18 @@ def _merge_eastmoney(days: int) -> list[dict[str, Any]]:
     """
     per_channel: dict[str, dict[str, float | None]] = {}
     for key, mutual_type in _CHANNEL_TYPES.items():
-        for row in _fetch_eastmoney_channel(mutual_type, days):
+        try:
+            rows = _fetch_eastmoney_channel(mutual_type, days)
+        except Exception as exc:
+            # Keep the usable channel when its peer is unavailable, but make
+            # the missing leg visible and give the official source a chance.
+            if errors is not None:
+                errors.append(f"{key}: {exc}")
+            logger.warning("southbound eastmoney %s fetch failed: %s", key, exc)
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
             date = _trade_date(row.get("TRADE_DATE"))
             if date is None:
                 continue
@@ -159,15 +203,7 @@ def _merge_eastmoney(days: int) -> list[dict[str, Any]]:
         entry = per_channel[date]
         shanghai = entry.get("shanghai_connect")
         shenzhen = entry.get("shenzhen_connect")
-        values = [v for v in (shanghai, shenzhen) if v is not None]
-        history.append(
-            {
-                "trade_date": date,
-                "shanghai_connect": shanghai,
-                "shenzhen_connect": shenzhen,
-                "total": round(sum(values), 4) if values else None,
-            }
-        )
+        history.append(_flow_row(date, shanghai, shenzhen))
     return history[-days:]
 
 
@@ -185,13 +221,16 @@ def _parse_hkex_report(text: str) -> dict[str, Any] | None:
         payload = json.loads(text[text.index("[") : text.rindex("]") + 1])
     except (ValueError, json.JSONDecodeError):
         return None
-    nets: dict[str, float] = {}
-    date: str | None = None
+    nets_by_date: dict[str, dict[str, float]] = {}
     for section in payload if isinstance(payload, list) else []:
+        if not isinstance(section, dict):
+            continue
         market = section.get("market")
         if market not in ("SSE Southbound", "SZSE Southbound"):
             continue
-        date = date or section.get("date")
+        date = _trade_date(section.get("date"))
+        if date is None:
+            continue
         for content in section.get("content", []):
             table = content.get("table", {})
             schema = (table.get("schema") or [[]])[0]
@@ -212,19 +251,16 @@ def _parse_hkex_report(text: str) -> dict[str, Any] | None:
             sell = _coerce_float(str(values.get("Sell Turnover", "")).replace(",", ""))
             if buy is not None and sell is not None:
                 # million HKD → 100M HKD to match the Eastmoney caliber.
-                nets[market] = round((buy - sell) / 100.0, 4)
+                nets_by_date.setdefault(date, {})[market] = round((buy - sell) / 100.0, 4)
             break
-    if not nets:
+    if not nets_by_date:
         return None
+    # A malformed/mixed publication must not combine different trading days.
+    date = max(nets_by_date)
+    nets = nets_by_date[date]
     shanghai = nets.get("SSE Southbound")
     shenzhen = nets.get("SZSE Southbound")
-    values = [v for v in (shanghai, shenzhen) if v is not None]
-    return {
-        "trade_date": date,
-        "shanghai_connect": shanghai,
-        "shenzhen_connect": shenzhen,
-        "total": round(sum(values), 4) if values else None,
-    }
+    return _flow_row(date, shanghai, shenzhen)
 
 
 def _fetch_hkex_latest() -> dict[str, Any] | None:
@@ -250,7 +286,13 @@ def _fetch_hkex_latest() -> dict[str, Any] | None:
                 "HKEX daily statistics HTTP %s for %s", response.status_code, day
             )
             continue
-        row = _parse_hkex_report(response.text)
+        try:
+            row = _parse_hkex_report(response.text)
+        except (ValueError, TypeError, AttributeError, IndexError) as exc:
+            # A provider schema change must not discard already fetched
+            # Eastmoney observations when this source is only filling gaps.
+            logger.debug("Invalid HKEX daily statistics for %s: %s", day, exc)
+            continue
         if row is not None:
             return row
     return None
@@ -296,7 +338,7 @@ class SouthboundFlowTool(BaseTool):
 
         Returns:
             A JSON string envelope ``{"ok": true, "market": "HK",
-            "source": "eastmoney"|"hkex", "data": {...}}`` on success, or
+            "source": "eastmoney"|"eastmoney+hkex"|"hkex", "data": {...}}`` on success, or
             ``{"ok": false, "error": str}`` when neither source serves data.
         """
         lookback_days = _clamp_lookback(
@@ -305,19 +347,46 @@ class SouthboundFlowTool(BaseTool):
 
         history: list[dict[str, Any]] = []
         eastmoney_error: str | None = None
+        channel_errors: list[str] = []
         try:
-            history = _merge_eastmoney(lookback_days)
+            history = _merge_eastmoney(lookback_days, channel_errors)
+            eastmoney_error = "; ".join(channel_errors) or None
         except Exception as exc:  # noqa: BLE001 - fall back to HKEX official
             eastmoney_error = str(exc)
             logger.warning("southbound eastmoney fetch failed: %s", exc)
 
         if history:
+            warnings = list(channel_errors)
+            supplemented = False
+            if any(row["partial"] for row in history):
+                snapshot = _fetch_hkex_latest()
+                for index, row in enumerate(history):
+                    if not row["partial"] or snapshot is None or snapshot["trade_date"] != row["trade_date"]:
+                        continue
+                    channels = {key: row[key] for key in _CHANNEL_TYPES}
+                    sources = {key: "eastmoney" for key, value in channels.items() if value is not None}
+                    for key in row["missing_channels"]:
+                        if snapshot.get(key) is not None:
+                            channels[key] = snapshot[key]
+                            sources[key] = "hkex"
+                            supplemented = True
+                    history[index] = {
+                        **_flow_row(row["trade_date"], channels["shanghai_connect"], channels["shenzhen_connect"]),
+                        "channel_sources": sources,
+                    }
+                if supplemented:
+                    warnings.append("Missing Eastmoney channel values supplemented from HKEX for the same trading day.")
+                else:
+                    warnings.append("HKEX could not supply the missing channels for the same trading day; partial data retained.")
+            warnings.extend(_partial_warnings(history))
             latest = history[-1]
             return json.dumps(
                 {
                     "ok": True,
                     "market": "HK",
-                    "source": "eastmoney",
+                    "source": "eastmoney+hkex" if supplemented else "eastmoney",
+                    "partial": any(row["partial"] for row in history),
+                    **({"warnings": warnings} if warnings else {}),
                     "data": {
                         "unit": "100M HKD",
                         "lookback_days": lookback_days,
@@ -341,10 +410,11 @@ class SouthboundFlowTool(BaseTool):
                     "ok": True,
                     "market": "HK",
                     "source": "hkex",
+                    "partial": snapshot["partial"],
                     "warnings": [
                         f"{reason}; used the HKEX official daily statistics — "
                         "latest trading day snapshot only"
-                    ],
+                    ] + _partial_warnings([snapshot]),
                     "data": {
                         "unit": "100M HKD",
                         "lookback_days": lookback_days,

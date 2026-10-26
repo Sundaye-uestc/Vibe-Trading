@@ -371,6 +371,16 @@ def test_numeric_coercion(run_dir: Path) -> None:
     assert env["rows"][2] == [0, 2.0, "x", None, None, "null"]
 
 
+def test_security_identifiers_preserve_type_and_leading_zeroes(run_dir: Path) -> None:
+    _write_csv(
+        run_dir / "artifacts" / "trades.csv",
+        ["code", "symbol", "ticker", "trade_id", "clientOrderId", "price", "quantity"],
+        [["000001", "00700", "000001.SZ", "00042", "000007", "12.5", "100"]],
+    )
+    env = json.loads(read_run_artifact(str(run_dir), "trades"))
+    assert env["rows"] == [["000001", "00700", "000001.SZ", "00042", "000007", 12.5, 100]]
+
+
 # --------------------------------------------------------------------------
 # (f) meta
 # --------------------------------------------------------------------------
@@ -458,14 +468,42 @@ def test_byte_budget_restrides_downsample(
     assert env["rows"][-1] == _expected_row(EQUITY_ROWS - 1)
 
 
-def test_byte_budget_never_breaks_json_at_floor(
+def test_byte_budget_refuses_oversized_record_without_stalling_cursor(
     run_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(run_artifact_tool, "_BYTE_BUDGET", 10)
-    env = json.loads(read_run_artifact(str(run_dir), "equity", max_rows=100))
-    assert env["returned_rows"] == 1
-    assert env["truncated"] is True
-    assert env["next_offset"] == 1
+    monkeypatch.setattr(run_artifact_tool, "_BYTE_BUDGET", 1024)
+    _write_csv(run_dir / "artifacts" / "trades.csv", ["note"], [["中" * 2000]])
+    payload = read_run_artifact(str(run_dir), "trades", max_rows=100)
+    env = json.loads(payload)
+    assert len(payload.encode("utf-8")) <= 1024
+    assert env["ok"] is False
+    assert "next_offset" not in env
+
+
+def test_byte_budget_counts_utf8_bytes_and_pages_cjk_losslessly(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(run_artifact_tool, "_BYTE_BUDGET", 3000)
+    rows = [[str(i), "中文" * 80] for i in range(10)]
+    _write_csv(run_dir / "artifacts" / "trades.csv", ["id", "note"], rows)
+    gathered = []
+    offset = 0
+    for _ in range(10):
+        payload = read_run_artifact(str(run_dir), "trades", offset=offset, max_rows=1000)
+        assert len(payload.encode("utf-8")) <= 3000
+        env = json.loads(payload)
+        gathered.extend(env["rows"])
+        if env["next_offset"] is None:
+            break
+        assert env["next_offset"] > offset
+        offset = env["next_offset"]
+    assert gathered == rows
+
+
+def test_downsample_never_exceeds_budget_to_pin_oversized_endpoints(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(run_artifact_tool, "_BYTE_BUDGET", 1024)
+    _write_csv(run_dir / "artifacts" / "trades.csv", ["note"], [["中" * 2000], ["end"]])
+    payload = read_run_artifact(str(run_dir), "trades", format="downsample")
+    assert len(payload.encode("utf-8")) <= 1024
+    assert json.loads(payload)["ok"] is False
 
 
 # --------------------------------------------------------------------------
@@ -490,14 +528,131 @@ def test_ohlcv_code_maps_to_artifacts_file(run_dir: Path) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_run_card_returns_parsed_json_regardless_of_format(run_dir: Path) -> None:
+def test_run_card_small_content_preserves_the_json_envelope(run_dir: Path) -> None:
     card = {"run_id": "abc", "metrics": {"sharpe": 1.25}, "tags": ["x"]}
     (run_dir / "run_card.json").write_text(json.dumps(card), encoding="utf-8")
-    for fmt in ("rows", "downsample", "meta"):
+    for fmt in ("rows", "downsample"):
         env = json.loads(read_run_artifact(str(run_dir), "run_card", format=fmt))
         assert set(env) == {"artifact", "run_dir", "json", "size_bytes"}
         assert env["json"] == card
         assert env["size_bytes"] == (run_dir / "run_card.json").stat().st_size
+
+
+def test_json_meta_returns_shape_without_values(run_dir: Path) -> None:
+    content = {"evidence": ["中" * 1000] * 1000}
+    (run_dir / "artifacts" / "validation.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+    entry = _manifest_entry(run_dir, "artifacts/validation.json")
+    _write_run_card(run_dir, [entry])
+    payload = read_run_artifact(str(run_dir), "artifacts/validation.json", format="meta", max_rows=1)
+    env = json.loads(payload)
+    assert "json" not in env
+    assert env["json_type"] == "object"
+    assert env["columns"] == ["evidence"]
+    assert env["total_rows"] == 1
+    assert env["size_bytes"] == entry["size_bytes"]
+    assert env["sha256"] == entry["sha256"]
+    assert len(payload.encode("utf-8")) < 1024
+
+
+@pytest.mark.parametrize("object_mode", [False, True])
+def test_json_pages_reassemble_losslessly_with_a_utf8_byte_budget(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch, object_mode: bool,
+) -> None:
+    monkeypatch.setattr(run_artifact_tool, "_BYTE_BUDGET", 3000)
+    values = ["中文" * 80 + str(i) for i in range(20)]
+    content = {str(i): value for i, value in enumerate(values)} if object_mode else values
+    (run_dir / "run_card.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+    gathered = {} if object_mode else []
+    offset = 0
+    for _ in range(30):
+        payload = read_run_artifact(str(run_dir), "run_card", max_rows=7, offset=offset)
+        assert len(payload.encode("utf-8")) <= 3000
+        env = json.loads(payload)
+        assert env["returned_rows"] <= 7
+        if object_mode:
+            gathered.update(env["json"])
+        else:
+            gathered.extend(env["json"])
+        if env["next_offset"] is None:
+            break
+        assert env["next_offset"] > offset
+        offset = env["next_offset"]
+    else:
+        pytest.fail("JSON paging did not terminate")
+    assert gathered == content
+
+
+def test_json_oversized_nested_value_errors_without_a_nonadvancing_cursor(run_dir: Path) -> None:
+    (run_dir / "run_card.json").write_text(json.dumps({"evidence": "中" * 100_000}, ensure_ascii=False), encoding="utf-8")
+    payload = read_run_artifact(str(run_dir), "run_card", max_rows=1)
+    env = json.loads(payload)
+    assert len(payload.encode("utf-8")) <= run_artifact_tool._BYTE_BUDGET
+    assert env["ok"] is False
+    assert "next_offset" not in env
+    assert "split oversized nested JSON" in env["hint"]
+
+
+def test_json_object_columns_can_skip_an_oversized_field(run_dir: Path) -> None:
+    (run_dir / "run_card.json").write_text(json.dumps({"evidence": "中" * 100_000, "status": "complete"}), encoding="utf-8")
+    env = json.loads(read_run_artifact(str(run_dir), "run_card", columns=["status"]))
+    assert env["json"] == {"status": "complete"}
+
+
+def test_json_downsample_preserves_endpoints_and_utf8_budget(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(run_artifact_tool, "_BYTE_BUDGET", 3000)
+    rows = [f"{i}:" + "中" * 200 for i in range(20)]
+    (run_dir / "run_card.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    payload = read_run_artifact(str(run_dir), "run_card", format="downsample", max_rows=10)
+    assert len(payload.encode("utf-8")) <= 3000
+    env = json.loads(payload)
+    assert env["json"][0] == rows[0]
+    assert env["json"][-1] == rows[-1]
+    assert env["returned_rows"] <= 10
+    assert env["next_offset"] is None
+
+
+def test_json_meta_wide_schema_is_bounded(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(run_artifact_tool, "_BYTE_BUDGET", 1024)
+    content = {"列" * 100 + str(i): i for i in range(100)}
+    (run_dir / "run_card.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+    payload = read_run_artifact(str(run_dir), "run_card", format="meta")
+    assert len(payload.encode("utf-8")) <= 1024
+    env = json.loads(payload)
+    assert env["total_columns"] == 100
+    assert env["columns_truncated"] is True
+    assert len(env["columns"]) < 100
+
+
+def test_json_offsets_are_validated_and_past_end_finishes(run_dir: Path) -> None:
+    (run_dir / "run_card.json").write_text("[1,2,3]", encoding="utf-8")
+    assert json.loads(read_run_artifact(str(run_dir), "run_card", offset=-1))["ok"] is False
+    env = json.loads(read_run_artifact(str(run_dir), "run_card", offset=10))
+    assert env["json"] == []
+    assert env["returned_rows"] == 0
+    assert env["next_offset"] is None
+    assert env["truncated"] is False
+
+
+def test_mcp_json_paging_forwards_the_resume_cursor(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import mcp_server
+
+    class Registry:
+        def execute(self, name, arguments):
+            assert name == "read_run_artifact"
+            return RunArtifactTool().execute(**arguments)
+
+    monkeypatch.setattr(mcp_server, "_get_registry", Registry)
+    wrapper = getattr(mcp_server.read_run_artifact, "fn", None) or getattr(
+        mcp_server.read_run_artifact, "__wrapped__", mcp_server.read_run_artifact,
+    )
+    content = ["000001", "00700", "AAPL.US", "600519.SH"]
+    (run_dir / "run_card.json").write_text(json.dumps(content), encoding="utf-8")
+    first = json.loads(wrapper(run_dir=str(run_dir), artifact="run_card", max_rows=2))
+    second = json.loads(wrapper(
+        run_dir=str(run_dir), artifact="run_card", offset=first["next_offset"], max_rows=2,
+    ))
+    assert first["json"] + second["json"] == content
+    assert second["next_offset"] is None
 
 
 def test_corrupt_run_card_rejected(run_dir: Path) -> None:

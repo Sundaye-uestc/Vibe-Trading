@@ -52,7 +52,8 @@ def test_openrouter_ignores_non_ascii_ambient_openai_headers() -> None:
 
     env = {
         "OPENAI_CUSTOM_HEADERS": (
-            f"X-Debug: {'x' * 3069}à\nauthorization: stale-à\nX-Explicit: ambient-value\nx-case: ambient-à"
+            f"X-Debug: {'x' * 3069}à\nauthorization: stale-à\nX-Explicit: ambient-value"
+            "\nX-Case: ambient-à\nx-case: ambient-à\nX-CASE: ambient-à"
         ),
         "OPENAI_ORG_ID": "org-à",
         "OPENAI_PROJECT_ID": "project-à",
@@ -83,6 +84,27 @@ def test_openrouter_ignores_non_ascii_ambient_openai_headers() -> None:
     assert headers["authorization"] == "Bearer sk-or-test"
     assert headers["x-explicit"] == "provider-value"
     assert headers["x-case"] == "provider-value"
+
+
+@pytest.mark.skipif(ChatOpenAIWithReasoning is None, reason="langchain-openai is not installed")
+def test_request_headers_override_provider_defaults_without_duplicate_casings():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.extend(request.headers.multi_items())
+        return _stream_response("ok")
+
+    with patch.dict(os.environ, {"OPENAI_CUSTOM_HEADERS": "x-case: ambient-à\nAUTHORIZATION: ambient-à"}, clear=True):
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            llm = ChatOpenAIWithReasoning(
+                model="relay-test", api_key="sdk-key", base_url="https://relay.invalid/v1",
+                default_headers={"X-Case": "provider-value", "authorization": "Bearer explicit-provider"},
+                http_client=client, vibe_provider="openrouter", vibe_api_key="sdk-key",
+            )
+            list(llm.stream("hello", extra_headers={"X-CASE": "request-value", "Authorization": "Bearer request"}))
+
+    assert [value for key, value in seen if key == "x-case"] == ["request-value"]
+    assert [value for key, value in seen if key == "authorization"] == ["Bearer request"]
 
 
 @pytest.mark.skipif(

@@ -264,6 +264,7 @@ if ChatOpenAI is not None:
         _vibe_provider: Optional[str] = PrivateAttr(default=None)
         _vibe_api_key: str = PrivateAttr(default="")
         _vibe_ambient_header_names: tuple[str, ...] = PrivateAttr(default=())
+        _vibe_explicit_headers: dict[str, Any] = PrivateAttr(default_factory=dict)
         _vibe_has_explicit_authorization: bool = PrivateAttr(default=False)
         _vibe_owned_http_clients: tuple[Any, ...] = PrivateAttr(default=())
 
@@ -290,19 +291,13 @@ if ChatOpenAI is not None:
             self._vibe_provider = vibe_provider
             self._vibe_api_key = vibe_api_key or ""
             self._vibe_owned_http_clients = tuple(vibe_owned_http_clients or ())
-            self._vibe_ambient_header_names = tuple(
-                # HTTP header names are case-insensitive.  The OpenAI SDK
-                # preserves the spelling from OPENAI_CUSTOM_HEADERS, while
-                # provider defaults may use a different casing; compare the
-                # normalized names so an ambient ``x-case`` marker cannot
-                # accidentally omit an explicit ``X-Case`` header.
-                name for name in ambient_names if name.lower() not in explicit_names_lower
-            )
+            self._vibe_ambient_header_names = ambient_names
+            self._vibe_explicit_headers = dict(explicit_headers) if isinstance(explicit_headers, Mapping) else {}
             self._vibe_has_explicit_authorization = (
                 "authorization" in explicit_names_lower
             )
 
-        def _provider_scoped_extra_headers(self) -> dict[str, Any]:
+        def _provider_scoped_extra_headers(self, request_headers: Mapping[str, Any] | None = None) -> dict[str, Any]:
             """Remove ambient OpenAI-only headers from named relay requests."""
             provider = (self._vibe_provider or "").strip().lower()
             if not provider or provider == "openai" or OpenAIOmit is None:
@@ -319,6 +314,11 @@ if ChatOpenAI is not None:
                     ambient_authorization or name.lower() == "authorization"
                 )
 
+            if self._vibe_has_explicit_authorization or any(
+                name.lower() == "authorization" for name in (request_headers or {})
+            ):
+                overrides["Authorization"] = OpenAIOmit()
+
             # OPENAI_CUSTOM_HEADERS can override the SDK's normal Bearer header.
             # Remove every captured spelling, then restore the selected provider
             # credential under one canonical name so casing variants cannot
@@ -329,6 +329,19 @@ if ChatOpenAI is not None:
                 and self._vibe_api_key
             ):
                 overrides["Authorization"] = f"Bearer {self._vibe_api_key}"
+            # SDK 2.x merges dictionaries case-sensitively before HTTPX
+            # encodes them; SDK 3.x merges header names case-insensitively.
+            # Omit every ambient spelling, then restore explicit values LAST.
+            # Merely skipping matching names leaks a differently-cased ambient
+            # value on 2.x; omitting without restoring erases the explicit
+            # header on 3.x. Request-specific headers have final precedence.
+            for explicit in (self._vibe_explicit_headers, request_headers or {}):
+                for name, value in explicit.items():
+                    for previous in list(overrides):
+                        if previous.lower() == name.lower():
+                            overrides[previous] = OpenAIOmit()
+                    overrides.pop(name, None)
+                    overrides[name] = value
             return overrides
 
         def _capabilities(self):
@@ -719,11 +732,11 @@ if ChatOpenAI is not None:
                     else:
                         self._strip_tool_call_extra_content(m.get("tool_calls"))
 
-            scoped_headers = self._provider_scoped_extra_headers()
+            existing_headers = payload.get("extra_headers")
+            scoped_headers = self._provider_scoped_extra_headers(
+                existing_headers if isinstance(existing_headers, Mapping) else None
+            )
             if scoped_headers:
-                existing_headers = payload.get("extra_headers")
-                if isinstance(existing_headers, Mapping):
-                    scoped_headers.update(existing_headers)
                 payload["extra_headers"] = scoped_headers
             return payload
 

@@ -62,6 +62,9 @@ def _call(fn, *args, **kwargs):
 
 
 def register_paper_trade_routes(app: FastAPI):
+    from src.api.paper_data_routes import register_paper_data_routes
+
+    register_paper_data_routes(app)
     @app.post("/api/paper-trade/preflight", dependencies=[Depends(require_auth)])
     def data_preflight(body: PreflightRequest):
         return run_preflight(**body.model_dump())

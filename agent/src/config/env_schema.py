@@ -196,6 +196,9 @@ class DataConfig(_EnvBase):
     clickhouse_password: str = Field(alias="CLICKHOUSE_PASSWORD", default="", repr=False)
     clickhouse_database: str = Field(alias="CLICKHOUSE_DATABASE", default="default")
     clickhouse_timeout_seconds: float = Field(alias="CLICKHOUSE_TIMEOUT_SECONDS", default=10.0, gt=0, le=120)
+    # Explicit operator-selected credential file for manual paper-data updates.
+    # Never supplied by a browser request or by the agent's SELECT-only tools.
+    vibe_trading_paper_writer_env: str = Field(alias="VIBE_TRADING_PAPER_WRITER_ENV", default="")
     ccxt_exchange: str = Field(alias="CCXT_EXCHANGE", default="binance")
     ccxt_timeout_ms: int = Field(alias="CCXT_TIMEOUT_MS", default=15000)
     ccxt_fetch_budget_s: float = Field(alias="CCXT_FETCH_BUDGET_S", default=60.0)

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { FlaskConical, Plus, Trash2 } from "lucide-react";
+import { PaperDataUpdate } from "@/components/paper/PaperDataUpdate";
 import { PaperDataCheck } from "@/components/paper/PaperDataCheck";
 import {
   paperApi,
@@ -30,6 +31,7 @@ export function PaperTrading() {
   const [strategy, setStrategy] = useState("");
   const [date, setDate] = useState("");
   const [busy, setBusy] = useState(false);
+  const [dataBusy, setDataBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -86,7 +88,7 @@ export function PaperTrading() {
 
   async function create(event: FormEvent) {
     event.preventDefault();
-    if (busy || loading) return;
+    if (busy || loading || dataBusy) return;
     setBusy(true);
     setError("");
     const payload = { label, market, start, account_state: { cash: Number(cash), positions } };
@@ -110,7 +112,7 @@ export function PaperTrading() {
   }
   async function advance(event: FormEvent) {
     event.preventDefault();
-    if (!account || busy || loading) return;
+    if (!account || busy || loading || dataBusy) return;
     historyRequest.current += 1;
     setBusy(true);
     setError("");
@@ -177,7 +179,8 @@ export function PaperTrading() {
           {error}
         </div>
       )}
-      <PaperDataCheck key={`${selected}:${account?.market ?? market}`} market={account?.market ?? market} disabled={busy || loading} />
+      {(account?.market ?? market) === "cn_a" && <PaperDataUpdate disabled={busy || loading} onBusyChange={setDataBusy} />}
+      <PaperDataCheck key={`${selected}:${account?.market ?? market}`} market={account?.market ?? market} disabled={busy || loading || dataBusy} />
       <div className="grid gap-6 lg:grid-cols-[minmax(260px,1fr)_2fr]">
         <aside className="space-y-4">
           <section className={panel}>
@@ -186,7 +189,7 @@ export function PaperTrading() {
               <select
                 className={`${field} mt-2`}
                 value={selected}
-                disabled={busy || loading}
+                disabled={busy || loading || dataBusy}
                 onChange={(e) => setSelected(e.target.value)}
               >
                 <option value="">{t("paper.newAccount")}</option>
@@ -227,7 +230,7 @@ export function PaperTrading() {
         <div className="min-w-0 space-y-5">
           {!account ? (
             <form onSubmit={create} className={panel}>
-              <fieldset disabled={busy || loading} className="min-w-0 space-y-4">
+              <fieldset disabled={busy || loading || dataBusy} className="min-w-0 space-y-4">
               <h2 className="text-lg font-semibold">{t("paper.newAccount")}</h2>
               <label className="block text-sm">
                 {t("paper.label")}
@@ -371,7 +374,7 @@ export function PaperTrading() {
             </form>
           ) : (
             <form onSubmit={advance} className={panel}>
-              <fieldset disabled={busy || loading} className="min-w-0 space-y-4">
+              <fieldset disabled={busy || loading || dataBusy} className="min-w-0 space-y-4">
               <h2 className="text-lg font-semibold">{t("paper.advance")}</h2>
               <p className="text-sm text-muted-foreground">
                 {t("paper.executionNote")}

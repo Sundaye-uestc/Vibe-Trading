@@ -4,13 +4,14 @@ import { paperApi } from "@/lib/api";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("@/lib/api", () => ({ paperApi: { list: vi.fn(), create: vi.fn(), advance: vi.fn(), history: vi.fn(), preflight: vi.fn() } }));
+vi.mock("@/lib/api", () => ({ paperApi: { list: vi.fn(), create: vi.fn(), advance: vi.fn(), history: vi.fn(), preflight: vi.fn(), dataStatus: vi.fn(), saveWatchlist: vi.fn(), updateData: vi.fn() } }));
 const account = { id: "paper-1", label: "Example", market: "us", currency: "USD", start_on: "2026-10-20", last_date: null, revision: 7, account_state: { cash: 1000, positions: [] }, last_result: null } as const;
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(paperApi.list).mockResolvedValue([{ ...account }]);
   vi.mocked(paperApi.history).mockResolvedValue([]);
+  vi.mocked(paperApi.dataStatus).mockResolvedValue({ configured: true, update_available: true, status_code: "ready", watchlist: ["600522.SH"], latest_closed_date: "2026-10-28", coverage: [], last_job: null, limits: { max_symbols: 10, lookback_days: 200 } });
 });
 
 test("reuses an uncertain create request and reconciles an already-created account without duplicates", async () => {
@@ -142,4 +143,20 @@ test("shows the A-share data prerequisite and clears strategy drafts when changi
   expect(screen.getByLabelText("paper.mode")).toHaveValue("orders");
   await user.selectOptions(screen.getByLabelText("paper.mode"), "strategy");
   expect(screen.getByLabelText("paper.strategyPath")).toHaveValue("");
+});
+
+
+test("locks account controls while a manual data update is pending", async () => {
+  const pending = deferred<Awaited<ReturnType<typeof paperApi.updateData>>>();
+  vi.mocked(paperApi.updateData).mockReturnValueOnce(pending.promise);
+  render(<PaperTrading />);
+  await screen.findByRole("option", { name: "Example · USD" });
+  fireEvent.change(screen.getByRole("combobox", { name: "paper.market" }), { target: { value: "cn_a" } });
+  await waitFor(() => expect(screen.getByRole("button", { name: "paper.dataUpdate" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "paper.dataUpdate" }));
+  expect(screen.getByLabelText("paper.accounts")).toBeDisabled();
+  expect(screen.getByRole("combobox", { name: "paper.market" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "paper.create" })).toBeDisabled();
+  pending.resolve(await paperApi.dataStatus());
+  await waitFor(() => expect(screen.getByLabelText("paper.accounts")).toBeEnabled());
 });

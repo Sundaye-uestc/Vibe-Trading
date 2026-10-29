@@ -45,6 +45,27 @@ describe("api request helper", () => {
       .rejects.toMatchObject({ status: 502, message: expect.stringContaining("Invalid data-check response") });
   });
 
+  it("rejects incomplete watchlist status responses before they reach the page", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ configured: true }),
+      { status: 200, headers: { "content-type": "application/json" } })));
+    const { paperApi } = await loadApiModule();
+    await expect(paperApi.dataStatus()).rejects.toMatchObject({ status: 502, message: expect.stringContaining("Invalid market-data status") });
+  });
+
+  it("updates only the saved watchlist without accepting source credentials or a date override", async () => {
+    const status = { configured: true, update_available: true, status_code: "ready", watchlist: ["600522.SH"],
+      latest_closed_date: "2026-10-28", coverage: [], last_job: null, limits: { max_symbols: 10, lookback_days: 200 } };
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(status), {
+      status: 200, headers: { "content-type": "application/json" },
+    })));
+    vi.stubGlobal("fetch", fetchMock);
+    const { paperApi } = await loadApiModule();
+    await paperApi.saveWatchlist(["600522.SH"]);
+    await paperApi.updateData();
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/paper-data/watchlist", expect.objectContaining({ method: "PUT", body: '{"symbols":["600522.SH"]}' }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/paper-data/update", expect.objectContaining({ method: "POST", body: "{}" }));
+  });
+
   it("rejects non-JSON responses with a descriptive error", async () => {
     vi.stubGlobal(
       "fetch",

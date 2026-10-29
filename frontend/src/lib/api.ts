@@ -1892,6 +1892,52 @@ export interface PaperPreflight {
   provenance: { source: string; bars_as_of: string | null; ch_as_of?: string | null; network_as_of?: string | null };
   warnings: string[];
 }
+export interface PaperDataStatus {
+  configured: boolean;
+  update_available: boolean;
+  status_code: "ready" | "not_configured" | "source_unavailable" | "watchlist_empty";
+  watchlist: string[];
+  latest_closed_date: string;
+  coverage: {
+    symbol: string;
+    from_date: string | null;
+    to_date: string | null;
+    latest_bar_date: string | null;
+    missing_dates: string[];
+    missing_count: number;
+    status: "ready" | "missing" | "unavailable";
+  }[];
+  last_job: null | {
+    id: string;
+    status: "running" | "success" | "noop" | "failed";
+    code: string;
+    started_at: string;
+    finished_at: string | null;
+    updated_symbols: string[];
+    imported_snapshots: number;
+    outcome_unknown?: boolean;
+  };
+  limits: { max_symbols: number; lookback_days: number };
+}
+
+function validatePaperDataStatus(result: PaperDataStatus): PaperDataStatus {
+  if (!result || typeof result.configured !== "boolean" || typeof result.update_available !== "boolean"
+    || !["ready", "not_configured", "source_unavailable", "watchlist_empty"].includes(result.status_code)
+    || !Array.isArray(result.watchlist) || result.watchlist.some((symbol) => typeof symbol !== "string")
+    || typeof result.latest_closed_date !== "string" || !Array.isArray(result.coverage)
+    || result.coverage.some((item) => !item || typeof item.symbol !== "string"
+      || !["ready", "missing", "unavailable"].includes(item.status)
+      || !Array.isArray(item.missing_dates) || item.missing_dates.some((day) => typeof day !== "string")
+      || !Number.isInteger(item.missing_count) || item.missing_count < 0)
+    || !result.limits || !Number.isInteger(result.limits.max_symbols) || result.limits.max_symbols < 1
+    || (result.last_job !== null && (!result.last_job
+      || !["running", "success", "noop", "failed"].includes(result.last_job.status)
+      || typeof result.last_job.code !== "string" || !Array.isArray(result.last_job.updated_symbols)))) {
+    throw new ApiError("Invalid market-data status response. Refresh after the backend finishes updating.", 502);
+  }
+  return result;
+}
+
 export const paperApi = {
   list: () => request<PaperAccount[]>("/api/paper-accounts"),
   create: (body: { label: string; market: string; start: string; account_state: { cash: number; positions: PaperPosition[] }; idempotency_key?: string }) =>
@@ -1899,6 +1945,15 @@ export const paperApi = {
   advance: (id: string, body: { expected_revision: number; to_date: string; orders?: PaperOrder[]; strategy_path?: string }) =>
     request<{ account: PaperAccount; result: PaperResult; committed: boolean }>(`/api/paper-accounts/${encodeURIComponent(id)}/advance`, { method: "POST", body: JSON.stringify(body) }),
   history: (id: string) => request<PaperResult[]>(`/api/paper-accounts/${encodeURIComponent(id)}/history`),
+  dataStatus: async (signal?: AbortSignal) => validatePaperDataStatus(
+    await request<PaperDataStatus>("/api/paper-data", { signal }),
+  ),
+  saveWatchlist: async (symbols: string[]) => validatePaperDataStatus(
+    await request<PaperDataStatus>("/api/paper-data/watchlist", { method: "PUT", body: JSON.stringify({ symbols }) }),
+  ),
+  updateData: async () => validatePaperDataStatus(
+    await request<PaperDataStatus>("/api/paper-data/update", { method: "POST", body: JSON.stringify({}) }),
+  ),
   preflight: async (body: { market: string; from_date: string; to_date: string; symbols: string[] }) => {
     const result = await request<PaperPreflight>("/api/paper-trade/preflight", { method: "POST", body: JSON.stringify(body) });
     if (!result || !["ready", "warning", "blocked"].includes(result.status)

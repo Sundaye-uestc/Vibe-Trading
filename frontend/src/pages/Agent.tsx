@@ -240,6 +240,7 @@ export function Agent() {
   const replayCheckTimerRef = useRef(0);
   const smoothScrollingRef = useRef(false);
   const smoothScrollTimerRef = useRef(0);
+  const sessionScrollTimerRef = useRef(0);
   const titleBeforeCompletionRef = useRef<string | null>(null);
   const completedAttemptIdsRef = useRef<Set<string>>(new Set());
 
@@ -299,7 +300,8 @@ export function Agent() {
     setShowScrollBtn(false);
     window.clearTimeout(smoothScrollTimerRef.current);
     smoothScrollingRef.current = smooth;
-    requestAnimationFrame(() => {
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => {
       if (!listRef.current) return;
       if (smooth) {
         listRef.current.scrollTo({
@@ -316,6 +318,20 @@ export function Agent() {
       }
     });
   }, [isNearBottom]);
+
+  const cancelPendingSessionScroll = useCallback(() => {
+    window.clearTimeout(sessionScrollTimerRef.current);
+    sessionScrollTimerRef.current = 0;
+  }, []);
+
+  const scheduleSessionScroll = useCallback((sid: string, gen: number) => {
+    cancelPendingSessionScroll();
+    sessionScrollTimerRef.current = window.setTimeout(() => {
+      sessionScrollTimerRef.current = 0;
+      if (genRef.current !== gen || act().sessionId !== sid) return;
+      forceScrollToBottom();
+    }, 50);
+  }, [cancelPendingSessionScroll, forceScrollToBottom]);
 
   const flushPendingStreamUpdate = useCallback(() => {
     window.clearTimeout(streamFlushTimerRef.current);
@@ -483,10 +499,14 @@ export function Agent() {
 
   const doDisconnect = useCallback(() => {
     cancelPendingStreamFlush();
+    cancelPendingSessionScroll();
+    cancelAnimationFrame(rafRef.current);
+    window.clearTimeout(smoothScrollTimerRef.current);
+    smoothScrollingRef.current = false;
     window.clearTimeout(replayCheckTimerRef.current);
     disconnect();
     sseSessionRef.current = null;
-  }, [cancelPendingStreamFlush, disconnect]);
+  }, [cancelPendingStreamFlush, cancelPendingSessionScroll, disconnect]);
 
   const loadGoalSnapshot = useCallback(async (sid?: string | null) => {
     const targetSession = sid || act().sessionId;
@@ -661,19 +681,20 @@ export function Agent() {
       act().setSessionLoading(false);
       act().cacheSession(sid, agentMsgs);
       setRuntimeIdentity(latestRuntimeIdentity ?? {});
-      setTimeout(() => forceScrollToBottom(), 50);
+      scheduleSessionScroll(sid, gen);
     } catch {
       if (genRef.current !== gen) return;
       setRuntimeIdentity({});
       act().setSessionLoading(false);
     }
-  }, [forceScrollToBottom]);
+  }, [scheduleSessionScroll]);
 
   const refreshSessionMessages = useCallback(async (sid: string) => {
+    cancelPendingSessionScroll();
     const gen = genRef.current + 1;
     genRef.current = gen;
     await loadSessionMessages(sid, gen);
-  }, [loadSessionMessages]);
+  }, [cancelPendingSessionScroll, loadSessionMessages]);
 
   const syncCompletedAttempt = useCallback(async (sid: string, attemptId?: string) => {
     if (!attemptId) return false;
@@ -1268,7 +1289,7 @@ export function Agent() {
       const cached = getCachedSession(urlSessionId);
       switchSession(urlSessionId, cached);
       if (cached) {
-        setTimeout(() => forceScrollToBottom(), 50);
+        scheduleSessionScroll(urlSessionId, gen);
       }
       // Cached rows provide an instant shell; REST remains authoritative for a
       // turn that completed while this session was off-screen.
@@ -1323,7 +1344,7 @@ export function Agent() {
       reset();
       setEffortOverride(null);
     }
-  }, [urlSessionId, doDisconnect, loadSessionMessages, setupSSE, forceScrollToBottom]);
+  }, [urlSessionId, doDisconnect, loadSessionMessages, setupSSE, scheduleSessionScroll]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -1338,6 +1359,9 @@ export function Agent() {
   }, [sessionId, loadGoalSnapshot]);
 
   useEffect(() => () => {
+    // Invalidate in-flight history reads before cancelling their deferred UI
+    // work. A response arriving after teardown must not schedule another scroll.
+    genRef.current += 1;
     doDisconnect();
     cancelAnimationFrame(progressRafRef.current);
     pendingProgressRef.current.clear();

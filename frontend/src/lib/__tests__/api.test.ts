@@ -20,6 +20,31 @@ describe("api request helper", () => {
     vi.resetModules();
   });
 
+  it("shows validation explanations without echoing rejected input", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: [
+      { loc: ["body", "from_date"], msg: "Dates must use YYYY-MM-DD", input: "private-input" },
+      { loc: ["body", "symbols", 0], msg: "Invalid symbol", ctx: { secret: "private-input" } },
+    ] }), { status: 422, headers: { "content-type": "application/json" } })));
+    const { paperApi } = await loadApiModule();
+    await expect(paperApi.preflight({ market: "cn_a", from_date: "", to_date: "", symbols: [] })).rejects.toMatchObject({
+      status: 422, message: "from_date: Dates must use YYYY-MM-DD; symbols.0: Invalid symbol",
+    });
+  });
+
+  it("keeps a readable HTTP fallback for unrecognized error objects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: { input: "private-input" } }), { status: 422 })));
+    const { paperApi } = await loadApiModule();
+    await expect(paperApi.list()).rejects.toMatchObject({ status: 422, message: "HTTP 422" });
+  });
+
+  it("rejects an incomplete data-check response instead of crashing the page", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ partial: { status: "blocked" } }),
+      { status: 200, headers: { "content-type": "application/json" } })));
+    const { paperApi } = await loadApiModule();
+    await expect(paperApi.preflight({ market: "cn_a", from_date: "2026-10-26", to_date: "2026-10-28", symbols: [] }))
+      .rejects.toMatchObject({ status: 502, message: expect.stringContaining("Invalid data-check response") });
+  });
+
   it("rejects non-JSON responses with a descriptive error", async () => {
     vi.stubGlobal(
       "fetch",

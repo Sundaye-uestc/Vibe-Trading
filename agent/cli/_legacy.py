@@ -5507,6 +5507,9 @@ def _build_parser() -> argparse.ArgumentParser:
     from cli.commands.strategy_evidence import add_subparser as _add_strategy_evidence_subparser
     _add_strategy_evidence_subparser(subparsers)
 
+    from cli.commands.paper_trade import add_parser as _add_paper_parser
+    _add_paper_parser(subparsers)
+
     return parser
 
 
@@ -6414,6 +6417,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "strategy-evidence":
         from cli.commands.strategy_evidence import dispatch as _strategy_evidence_dispatch
         return _coerce_exit_code(_strategy_evidence_dispatch(args))
+    if args.command == "paper":
+        from cli.commands.paper_trade import dispatch as _paper_dispatch
+        return _coerce_exit_code(_paper_dispatch(args))
     if args.command == "portfolio":
         return _coerce_exit_code(_dispatch_portfolio(args))
     if args.command == "connector":

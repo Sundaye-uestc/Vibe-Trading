@@ -184,7 +184,6 @@ app.middleware("http")(_apply_security_headers)
 
 
 # Route registration + re-exports
-
 # --- Runs ---
 from src.api.runs_routes import register_runs_routes  # noqa: E402
 register_runs_routes(app)
@@ -238,7 +237,8 @@ from src.api.uploads_routes import (  # noqa: F401, E402
 # --- Channels ---
 from src.api.channels_routes import register_channels_routes  # noqa: E402
 register_channels_routes(app)
-from src.api.channels_config_routes import register_channels_config_routes; register_channels_config_routes(app)  # noqa: E402
+from src.api.channels_config_routes import register_channels_config_routes  # noqa: E402
+register_channels_config_routes(app)
 from src.api.qveris_routes import qveris_router  # noqa: E402  # QVERIS-INTEGRATION
 app.include_router(qveris_router)  # QVERIS-INTEGRATION
 
@@ -256,13 +256,13 @@ from src.api.swarm_routes import _get_swarm_runtime  # noqa: F401, E402
 from src.api.live_routes import register_live_routes  # noqa: E402
 register_live_routes(app)
 
-# --- Read-only portfolio dashboard ---
+# --- Portfolio dashboard and isolated paper accounts ---
 from src.api.portfolio_routes import register_portfolio_routes  # noqa: E402
 register_portfolio_routes(app)
-
+from src.api.paper_trade_routes import register_paper_trade_routes  # noqa: E402
+register_paper_trade_routes(app)
 from src.api.connection_routes import register_connection_routes  # noqa: E402
 register_connection_routes(app)
-
 # --- Installed skills (bundled + user) ---
 from src.api.skills_routes import register_skills_routes  # noqa: E402
 register_skills_routes(app)

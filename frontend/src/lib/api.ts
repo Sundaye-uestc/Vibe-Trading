@@ -284,7 +284,19 @@ async function errorFromResponse(res: Response): Promise<ApiError> {
     const body = await res.json();
     // Options endpoints report errors under an `error` key
     // ({status:"error", error} / {ok:false, error}) rather than detail/message.
-    detail = body.detail || body.message || body.error || detail;
+    const value: unknown = body.detail || body.message || body.error;
+    if (typeof value === "string") detail = value;
+    else if (Array.isArray(value)) {
+      // FastAPI validation errors include the rejected input; show only the
+      // field and explanation, never stringify credentials or whole payloads.
+      const messages = value.flatMap((item: unknown) => {
+        if (!item || typeof item !== "object" || !("msg" in item) || typeof item.msg !== "string") return [];
+        const path = "loc" in item && Array.isArray(item.loc)
+          ? item.loc.filter((part: unknown) => (typeof part === "string" || typeof part === "number") && part !== "body" && part !== "query").join(".") : "";
+        return [path ? `${path}: ${item.msg}` : item.msg];
+      });
+      if (messages.length) detail = messages.join("; ");
+    }
   } catch { /* ignore */ }
   if (res.status === 401 || res.status === 403) {
     detail = getAuthRequiredMessage();
@@ -1854,3 +1866,47 @@ export interface ToolTrailItem {
   call_id?: string;
   timestamp?: number;
 }
+
+export interface PaperPosition { symbol: string; qty: number; avg_cost: number }
+export interface PaperOrder { symbol: string; side: "buy" | "sell"; qty: number; limit?: number }
+export interface PaperResult {
+  code?: string; message?: string;
+  end_state?: { cash: number; positions: PaperPosition[] };
+  fills?: { trade_date: string; symbol: string; side: string; qty: number; price: number; fee: number }[];
+  rejected_orders?: { trade_date: string; symbol: string; reason_code: string }[];
+  nav_series?: { date: string; nav: number; cash: number }[];
+  warnings?: string[];
+  data_provenance?: { source: string; bars_as_of: string | null };
+}
+export interface PaperAccount {
+  id: string; label: string; market: "cn_a" | "hk" | "us"; currency: string;
+  start_on: string; last_date: string | null; revision: number;
+  account_state: { cash: number; positions: PaperPosition[] };
+  last_result: PaperResult | null;
+}
+export interface PaperPreflight {
+  market: string; from_date: string; to_date: string; symbols: string[];
+  ready: boolean; status: "ready" | "warning" | "blocked";
+  checks: { key: string; status: "ready" | "warning" | "blocked" | "not_checked"; message: string; missing_dates?: string[] }[];
+  bars: { symbol: string; as_of: string | null; missing_dates: string[]; invalid_dates: string[] }[];
+  provenance: { source: string; bars_as_of: string | null; ch_as_of?: string | null; network_as_of?: string | null };
+  warnings: string[];
+}
+export const paperApi = {
+  list: () => request<PaperAccount[]>("/api/paper-accounts"),
+  create: (body: { label: string; market: string; start: string; account_state: { cash: number; positions: PaperPosition[] }; idempotency_key?: string }) =>
+    request<PaperAccount>("/api/paper-accounts", { method: "POST", body: JSON.stringify(body) }),
+  advance: (id: string, body: { expected_revision: number; to_date: string; orders?: PaperOrder[]; strategy_path?: string }) =>
+    request<{ account: PaperAccount; result: PaperResult; committed: boolean }>(`/api/paper-accounts/${encodeURIComponent(id)}/advance`, { method: "POST", body: JSON.stringify(body) }),
+  history: (id: string) => request<PaperResult[]>(`/api/paper-accounts/${encodeURIComponent(id)}/history`),
+  preflight: async (body: { market: string; from_date: string; to_date: string; symbols: string[] }) => {
+    const result = await request<PaperPreflight>("/api/paper-trade/preflight", { method: "POST", body: JSON.stringify(body) });
+    if (!result || !["ready", "warning", "blocked"].includes(result.status)
+      || !Array.isArray(result.checks) || !Array.isArray(result.bars) || !Array.isArray(result.warnings)
+      || !result.provenance || result.checks.some((check) => !check || typeof check.key !== "string" || typeof check.message !== "string")
+      || result.bars.some((bar) => !bar || !Array.isArray(bar.missing_dates) || !Array.isArray(bar.invalid_dates))) {
+      throw new ApiError("Invalid data-check response. Refresh after the backend finishes updating.", 502);
+    }
+    return result;
+  },
+};

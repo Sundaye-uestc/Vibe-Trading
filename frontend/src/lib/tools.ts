@@ -9,6 +9,7 @@ export const TOOL_LABELS: Record<string, string> = {
   edit_file: "Edit code",
   read_file: "Read file",
   backtest: "Run backtest",
+  paper_trade_step: "Simulate daily trading",
   bash: "Run command",
   read_url: "Read webpage",
   read_document: "Read document",

@@ -187,7 +187,11 @@ class ReadFileTool(BaseTool):
             )
 
         try:
-            text = resolved.read_text(encoding="utf-8")
+            # Preserve the observation's actual line endings. Large tool
+            # results can be read as ordered parts; universal-newline
+            # conversion would make their reconstruction silently lossy.
+            with resolved.open("r", encoding="utf-8", newline="") as stream:
+                text = stream.read()
             if limit and limit > 0:
                 lines = text.splitlines(keepends=True)
                 text = "".join(lines[:limit])

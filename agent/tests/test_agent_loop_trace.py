@@ -42,7 +42,7 @@ class _SecretRegistry:
 
 
 def test_tool_call_trace_redacts_args_and_structured_results(tmp_path: Path) -> None:
-    """Persistent trace entries should not store raw credentials/account fields."""
+    """Neither persistent traces nor model history receive raw credentials."""
     agent = AgentLoop(
         registry=_SecretRegistry(),  # type: ignore[arg-type]
         llm=SimpleNamespace(),
@@ -79,7 +79,12 @@ def test_tool_call_trace_redacts_args_and_structured_results(tmp_path: Path) -> 
     result_payload = json.loads(tool_result["result"])
     assert result_payload["authorization"] == "[redacted]"
     assert result_payload["nested"]["api_key"] == "[redacted]"
-    assert messages[0]["content"].count("secret-token") == 1
+    assert "secret-token" not in messages[0]["content"]
+    assert "secret-key" not in messages[0]["content"]
+    model_payload = json.loads(messages[0]["content"])
+    assert model_payload == result_payload
+    assert model_payload["symbol"] == "AAPL"
+    assert model_payload["status"] == "ok"
 
 
 class _LongAnswerResponse:

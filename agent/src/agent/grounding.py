@@ -1412,6 +1412,7 @@ class GroundingLedger:
         self._analysis_completed: list[dict[str, Any]] = []
         self._analysis_metrics: list[dict[str, Any]] = []
         self._validations: list[dict[str, Any]] = []
+        self._historical_observations: list[dict[str, str]] = []
         self._recovery_rounds = 0
         self._symbol_resolution_attempts = 0
         self._price_evidence_attempts = 0
@@ -1428,6 +1429,135 @@ class GroundingLedger:
 
         self._seed_symbols(user_message, source="user_message")
         self.persist()
+
+    def restore_prior_observations(self, observations: Sequence[Any]) -> tuple[Any, ...]:
+        """Replay a server-only side channel for the explicitly same instrument.
+
+        Plain history, handoff prose, and a user's claim to have locked an
+        identity never call this path. An unqualified continuation is left
+        conservative: name the earlier instrument to reuse its observations.
+        The original data timestamps survive replay and are never refreshed.
+        """
+        from src.agent.recovery_evidence import PriorToolObservation
+
+        observations = tuple(item for item in observations if isinstance(item, PriorToolObservation))
+        explicit_mentions = _scan_symbols(self.user_message)
+        switches = list(re.finditer(r"改看|改为|换成|换到|更换为|\b(?:instead|switch to)\b",
+                                    self.user_message, re.IGNORECASE))
+        after_switch = switches[-1].end() if switches else 0
+        explicit: set[str] = set()
+        for match in _CANONICAL_SYMBOL_RE.finditer(self.user_message):
+            prefix = self.user_message[max(0, match.start() - 50):match.start()]
+            negated = re.search(r"(?:不要|不再|别|排除|忽略|而非|\bnot\b|\bexclude\b)[^，,;；。\n]{0,30}$",
+                                prefix, re.IGNORECASE)
+            if match.start() >= after_switch and not negated:
+                explicit.add(_normalize_symbol(match.group(0)))
+        allowed = set(explicit)
+        current_context = ResolutionContext.from_messages(self.user_message)
+
+        def names_subject(name: str) -> bool:
+            # A name is weaker than a canonical ticker. Require a standalone
+            # mention and refuse replacement/negation instructions rather than
+            # guessing whether the old listing remains the subject.
+            if re.search(r"不要|不再|别再|改看|改为|换成|换到|更换|\b(?:not|instead|rather|switch)\b",
+                         self.user_message, re.IGNORECASE):
+                return False
+            return bool(name and re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)",
+                                           self.user_message, re.IGNORECASE))
+
+        def market_matches(symbol: str, query: str) -> bool:
+            markets = {constraint.value for constraint in current_context.constraints_for(query)
+                       if constraint.dimension == "market"}
+            return not markets or candidate_market({"symbol": symbol}) in markets
+
+        allowed = {symbol for symbol in allowed if market_matches(symbol, symbol)}
+        accepted: list[PriorToolObservation] = []
+        latest_resolutions = {
+            _query_key(str(item.arguments.get("query") or "")): item
+            for item in observations if item.tool == _RESOLVER_TOOL
+        }
+        # Re-run the normal resolver decision instead of copying a stored
+        # `locked` flag; new market constraints still have to agree.
+        for item in observations:
+            if item.tool != _RESOLVER_TOOL or not item.success:
+                continue
+            if latest_resolutions.get(_query_key(str(item.arguments.get("query") or ""))) is not item:
+                continue
+            payload = _json_object(item.result) or {}
+            data = payload.get("data")
+            if not isinstance(data, dict) or payload.get("ok") is not True:
+                continue
+            query = str(data.get("query") or item.arguments.get("query") or "")
+            candidates = data.get("candidates")
+            if not isinstance(candidates, list) or not all(isinstance(row, dict) for row in candidates):
+                continue
+            chosen = self._choose_candidate(query, candidates)
+            if chosen is None:
+                continue
+            symbol = _normalize_symbol(chosen.get("symbol"))
+            name = str(chosen.get("name") or "").strip()
+            same_subject = symbol in explicit if explicit_mentions else names_subject(name)
+            if not same_subject or not market_matches(symbol, query):
+                continue
+            # An exact resolver query may select one of several candidates.
+            # Restore only that verified selection, never unrelated candidates.
+            scoped_payload = {**payload, "data": {**data, "candidates": [chosen], "count": 1}}
+            scoped_payload["_recovery_scope"] = "Only the previously selected, currently named instrument."
+            item = replace(item, result=json.dumps(scoped_payload, ensure_ascii=False))
+            if not _scan_symbols(item.result).issubset({symbol}):
+                continue
+            self.ingest_tool_result(tool_name=item.tool, arguments=item.arguments, result=item.result,
+                                    call_id=item.call_id, success=True)
+            if symbol not in self.authorized_symbols:
+                continue
+            allowed.add(symbol)
+            self._identity_required = self._buffer_output = True
+            # Identity audit time is the original successful observation.
+            for key, identity in list(self._identities.items()):
+                if identity.source_tool_call_id == item.call_id:
+                    self._identities[key] = replace(identity, updated_at=item.observed_at)
+            accepted.append(item)
+
+        for item in observations:
+            if item.tool == _RESOLVER_TOOL:
+                continue
+            symbols = {
+                self._match_authorized_symbol(_normalize_symbol(symbol), allowed) or _normalize_symbol(symbol)
+                for symbol in self._extract_symbol_arguments(item.arguments)
+            }
+            # Non-symbol calculations cannot prove which instrument they used.
+            # Multi-instrument results cannot authorize unrelated instruments.
+            if not symbols or not symbols.issubset(allowed):
+                continue
+            payload = _json_object(item.result)
+            if item.tool == "get_market_data" and payload is not None:
+                scoped_payload = {
+                    key: value for key, value in payload.items()
+                    if not str(key).startswith("_") and _normalize_symbol(key) in symbols
+                }
+                if isinstance(payload.get("_provenance"), dict):
+                    scoped_payload["_provenance"] = {
+                        key: value for key, value in payload["_provenance"].items()
+                        if _normalize_symbol(key) in symbols
+                    }
+                if isinstance(payload.get("_unresolved"), list):
+                    scoped_payload["_unresolved"] = [
+                        symbol for symbol in payload["_unresolved"] if _normalize_symbol(symbol) in symbols
+                    ]
+                item = replace(item, result=json.dumps(scoped_payload, ensure_ascii=False))
+            # Generic tool schemas vary. Refuse a mixed-instrument response
+            # rather than binding its other instrument's numbers to this one.
+            if not _scan_symbols(item.result).issubset(symbols):
+                continue
+            self.ingest_tool_result(tool_name=item.tool, arguments=item.arguments, result=item.result,
+                                    call_id=item.call_id, success=item.success)
+            accepted.append(item)
+        self._historical_observations = [
+            {"call_id": item.call_id, "attempt_id": item.attempt_id, "observed_at": item.observed_at}
+            for item in accepted
+        ]
+        self.persist()
+        return tuple(accepted)
 
     @property
     def authorized_symbols(self) -> set[str]:
@@ -2141,6 +2271,7 @@ class GroundingLedger:
                 "analysis_completed": list(self._analysis_completed),
                 "analysis_evidence": list(self._analysis_metrics),
                 "validations": list(self._validations),
+                "historical_observations": list(self._historical_observations),
             }
             temp.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

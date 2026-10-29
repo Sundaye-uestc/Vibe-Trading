@@ -11,7 +11,10 @@ existing failure path.
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 from unittest.mock import patch
+
+import pytest
 
 from src.providers.chat import LLMResponse, ProviderStreamError
 from src.swarm.models import SwarmAgentSpec, SwarmTask, WorkerResult
@@ -88,7 +91,7 @@ class _FlakyChatLLM:
         return self._final
 
 
-def _stream_error() -> ProviderStreamError:
+def _stream_error(usage_metadata=None) -> ProviderStreamError:
     """Build a ProviderStreamError mimicking a transient mid-stream reset.
 
     Returns:
@@ -98,10 +101,11 @@ def _stream_error() -> ProviderStreamError:
         provider="openrouter",
         model="test-model",
         original=ConnectionResetError("connection reset by peer"),
+        usage_metadata=usage_metadata,
     )
 
 
-def _run(monkeypatch, tmp_path: Path, llm: _FlakyChatLLM) -> WorkerResult:
+def _run(monkeypatch, tmp_path: Path, llm: _FlakyChatLLM, cancel_event=None) -> WorkerResult:
     """Run a tool-less worker against the given scripted LLM.
 
     Args:
@@ -133,6 +137,7 @@ def _run(monkeypatch, tmp_path: Path, llm: _FlakyChatLLM) -> WorkerResult:
             upstream_summaries={},
             user_vars={},
             run_dir=tmp_path,
+            cancel_event=cancel_event,
         )
 
 
@@ -193,3 +198,62 @@ def test_non_retryable_4xx_fails_without_retry(monkeypatch, tmp_path):
     assert result.status == "failed"
     assert "LLM call failed at iteration 0" in (result.error or "")
     assert llm.calls == 1
+
+
+def test_failed_request_usage_and_successful_retry_are_each_counted_once(monkeypatch, tmp_path):
+    llm = _FlakyChatLLM(
+        [_stream_error({"input_tokens": 17, "output_tokens": 5})],
+        LLMResponse(content=FINAL_TEXT, usage_metadata={"input_tokens": 29, "output_tokens": 11}),
+    )
+    result = _run(monkeypatch, tmp_path, llm)
+    assert result.status == "completed"
+    assert llm.calls == 2
+    assert (result.input_tokens, result.output_tokens) == (46, 16)
+
+
+def test_final_failure_keeps_usage_from_both_requests(monkeypatch, tmp_path):
+    llm = _FlakyChatLLM(
+        [_stream_error({"input_tokens": 17, "output_tokens": 5}),
+         _stream_error({"input_tokens": 29, "output_tokens": 11})],
+        LLMResponse(content=FINAL_TEXT),
+    )
+    result = _run(monkeypatch, tmp_path, llm)
+    assert result.status == "failed"
+    assert llm.calls == 2
+    assert (result.input_tokens, result.output_tokens) == (46, 16)
+
+
+def test_nonretryable_failure_keeps_reported_usage(monkeypatch, tmp_path):
+    error = _bad_request_error()
+    error.usage_metadata = {"input_tokens": 17, "output_tokens": 5}
+    llm = _FlakyChatLLM([error], LLMResponse(content=FINAL_TEXT))
+    result = _run(monkeypatch, tmp_path, llm)
+    assert result.status == "failed"
+    assert llm.calls == 1
+    assert (result.input_tokens, result.output_tokens) == (17, 5)
+
+
+@pytest.mark.parametrize("usage", [None, {}, {"input_tokens": 0, "output_tokens": 0},
+                                   {"input_tokens": True, "output_tokens": -1},
+                                   {"input_tokens": "unknown", "output_tokens": float("nan")}])
+def test_failed_requests_never_invent_usage(monkeypatch, tmp_path, usage):
+    llm = _FlakyChatLLM([_stream_error(usage), _stream_error(usage)], LLMResponse(content=FINAL_TEXT))
+    result = _run(monkeypatch, tmp_path, llm)
+    assert result.status == "failed"
+    assert (result.input_tokens, result.output_tokens) == (0, 0)
+
+
+def test_cancel_during_retry_backoff_does_not_count_a_nonexistent_response(monkeypatch, tmp_path):
+    cancel_event = threading.Event()
+
+    class CancellingLLM(_FlakyChatLLM):
+        def stream_chat(self, messages, **kwargs):
+            self.calls += 1
+            cancel_event.set()
+            raise _stream_error({"input_tokens": 17, "output_tokens": 5})
+
+    llm = CancellingLLM([], LLMResponse(content=FINAL_TEXT))
+    result = _run(monkeypatch, tmp_path, llm, cancel_event=cancel_event)
+    assert result.status == "cancelled"
+    assert llm.calls == 1
+    assert (result.input_tokens, result.output_tokens) == (17, 5)

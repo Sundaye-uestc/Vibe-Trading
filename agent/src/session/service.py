@@ -479,13 +479,14 @@ class SessionService:
             _summary_chunks,
         )
         from src.providers.chat import ChatLLM
+        from src.agent.llm_usage import _normalize_llm_usage
+        from src.goal import GoalStore
 
         effort_override = None
         if session.config:
             raw_effort = session.config.get("reasoning_effort")
             if isinstance(raw_effort, str):
                 effort_override = raw_effort
-        llm = ChatLLM(reasoning_effort=effort_override)
 
         # If an earlier compaction already folded a prefix, summarise that
         # summary plus the new turns instead of re-reading the raw prefix.
@@ -495,10 +496,49 @@ class SessionService:
         if not serialize and not prior_summary:
             return {"status": "noop", "reason": "nothing to compact"}
 
+        goal_store = GoalStore()
+        goal_snapshot = goal_store.get_current_snapshot(session_id)
+        goal_id = goal_snapshot["goal"]["goal_id"] if goal_snapshot else None
+        usage_summary = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                         "calls": 0, "unreported_calls": 0}
+
+        def budget_exhausted() -> bool:
+            snapshot = goal_store.get_goal_snapshot(goal_id) if goal_id else None
+            goal = (snapshot or {}).get("goal") or {}
+            limit = goal.get("token_budget")
+            return limit is not None and int(goal.get("tokens_used") or 0) >= limit
+
+        def account_summary_usage(usage: Any) -> None:
+            normalized = _normalize_llm_usage(usage)
+            if normalized is None:
+                usage_summary["unreported_calls"] += 1
+                return
+            usage_summary["calls"] += 1
+            for key, value in normalized.items():
+                usage_summary[key] = usage_summary.get(key, 0) + value
+            if goal_id:
+                # Manual compression is an auxiliary call within this goal,
+                # not another research turn. Use only provider-reported tokens.
+                goal_store.account_usage(
+                    session_id=session_id, goal_id=goal_id, expected_goal_id=goal_id,
+                    token_delta=normalized["total_tokens"], turn_delta=0,
+                )
+                snapshot = goal_store.get_goal_snapshot(goal_id)
+                if snapshot:
+                    self.event_bus.emit(session_id, "goal.updated", {"goal": snapshot["goal"], "snapshot": snapshot})
+
+        if budget_exhausted():
+            return {"status": "noop", "reason": "goal_token_budget_exhausted", "usage_metadata": usage_summary}
+        llm = ChatLLM(reasoning_effort=effort_override)
+
         tokens_before = sum(len(m["content"]) for m in serialize) // 4
         summary = prior_summary
         loop = asyncio.get_running_loop()
         for chunk in _summary_chunks(serialize):
+            if budget_exhausted():
+                # The completed chunks do not cover the entire head. Leave the
+                # append-only log/boundary intact so no evidence is folded away.
+                return {"status": "noop", "reason": "goal_token_budget_exhausted", "usage_metadata": usage_summary}
             if summary:
                 prompt = _ITERATIVE_UPDATE_PROMPT.format(
                     previous_summary=summary,
@@ -511,12 +551,17 @@ class SessionService:
             def _run_summary(text: str = prompt) -> Any:
                 return llm.chat([{"role": "user", "content": text}])
 
-            response = await loop.run_in_executor(_AGENT_EXECUTOR, _run_summary)
+            try:
+                response = await loop.run_in_executor(_AGENT_EXECUTOR, _run_summary)
+            except Exception as exc:
+                account_summary_usage(getattr(exc, "usage_metadata", None))
+                raise
+            account_summary_usage(getattr(response, "usage_metadata", None))
             content = getattr(response, "content", "")
             if not isinstance(content, str) or not content.strip():
                 # Do not advance ``through`` past a chunk the provider failed
                 # to summarise. The original log remains usable for a retry.
-                return {"status": "noop", "reason": "summarizer returned no content"}
+                return {"status": "noop", "reason": "summarizer returned no content", "usage_metadata": usage_summary}
             summary = content
 
         if not summary:
@@ -533,6 +578,7 @@ class SessionService:
                 "tokens_before": tokens_before,
                 "compacted_messages": len(serialize),
                 "recovery_evidence": recovery_evidence,
+                "usage_metadata": usage_summary,
             },
         )
         self.store.append_message(marker)
@@ -544,6 +590,7 @@ class SessionService:
                 "message_id": marker.message_id,
                 "compacted_messages": len(serialize),
                 "tokens_before": tokens_before,
+                "usage_metadata": usage_summary,
             },
         )
         return {
@@ -551,6 +598,7 @@ class SessionService:
             "message_id": marker.message_id,
             "tokens_before": tokens_before,
             "compacted_messages": len(serialize),
+            "usage_metadata": usage_summary,
         }
 
     async def _run_attempt(self, session: Session, attempt: Attempt, *, include_shell_tools: bool = False) -> None:
@@ -801,14 +849,25 @@ class SessionService:
 
         # Build the message history context.
         history = self._convert_messages_to_history(messages) if messages else None
+        from src.agent.recovery_evidence import load_prior_observations
 
         try:
+            try:
+                prior_observations = await loop.run_in_executor(
+                    _AGENT_EXECUTOR,
+                    lambda: load_prior_observations(self.store, session_id, messages or []),
+                )
+            except (OSError, ValueError, TypeError):
+                logger.warning("Historical tool observations unavailable for session %s", session_id)
+                prior_observations = ()
+            recovery_kwargs = {"prior_observations": prior_observations} if prior_observations else {}
             result = await loop.run_in_executor(
                 _AGENT_EXECUTOR,
                 lambda: agent.run(
                     user_message=attempt.prompt,
                     history=history,
                     session_id=session_id,
+                    **recovery_kwargs,
                 ),
             )
         finally:

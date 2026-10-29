@@ -58,8 +58,8 @@ sse-starlette>=1.6.0
 
 # MCP Server
 fastmcp>=2.14.0,<4.0.0
-# Match the project metadata: IBKR OAuth requires the pre-1.30 issuer behavior.
-mcp<1.30
+# Reclaim stateful HTTP sessions; retain the tested 1.x SDK interface.
+mcp>=1.30.0,<2
 
 # Web Search
 ddgs>=6.0.0

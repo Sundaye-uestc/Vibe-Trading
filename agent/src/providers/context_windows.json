@@ -1,0 +1,28 @@
+{
+  "_comment": "Documented model context limits used for compaction planning. Explicit VIBE_TRADING_CONTEXT_WINDOW wins, then a learned provider limit. Unknown models use default_window. This catalog does not grant model/provider access.",
+  "default_window": 128000,
+  "models": [
+    {
+      "provider": "openai-codex",
+      "pattern": "^(openai[-_]codex/)?(gpt-6-(astra|sol|luna)|gpt-5\\.6-(sol|terra|luna)|gpt-5\\.5)$",
+      "window": 272000,
+      "source": "Upstream context_windows.json: Codex backend model metadata fetched 2026-09-29; https://github.com/HKUDS/Vibe-Trading/blob/bff6e7625fd479d78db81aa5fbf4f317f6bef416/agent/src/providers/context_windows.json"
+    },
+    {
+      "pattern": "^(deepseek/)?deepseek-(flash|v4(?:[.-]1)?-flash|v4-pro)(?:[-.]\\d{4,8})?$",
+      "window": 1048576,
+      "source": "https://api-docs.deepseek.com/api/list-models/ — official deepseek-flash (V4.1 Flash) and deepseek-v4-pro metadata: context_window=1048576, checked 2026-10-28"
+    }
+  ],
+  "overflow_error_patterns": [
+    "context_length_exceeded",
+    "maximum context length",
+    "context window",
+    "prompt is too long",
+    "input is too long",
+    "too many tokens",
+    "exceeds the context",
+    "exceeded model token limit",
+    "reduce the length of the messages"
+  ]
+}

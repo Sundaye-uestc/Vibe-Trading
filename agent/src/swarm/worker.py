@@ -18,8 +18,10 @@ from typing import Any, Callable
 from src.agent.context import ContextBuilder
 from src.agent.progress import HeartbeatTimer
 from src.agent.skills import SkillsLoader
+from src.agent.tool_loading import DeferredToolRegistry, prepare_registry, request_definitions
 from src.agent.tools import ToolRegistry
-from src.config.limits import truncate_tool_result
+from src.agent.context_budget import is_context_overflow
+from src.agent.result_artifacts import deliver_tool_result
 from src.config.schema import AgentConfig
 from src.providers.chat import ChatLLM, LLMResponse, ProviderStreamError
 from src.providers.content_filter import (
@@ -33,9 +35,10 @@ from src.swarm.models import (
     SwarmTask,
     WorkerResult,
 )
+from src.swarm.context import WorkerContext
 from src.tools import build_swarm_registry
 from src.tools.mcp import MCPRemoteTool
-from src.tools.redaction import is_sensitive_arg, redact_payload, redact_tool_result
+from src.tools.redaction import redact_payload, redact_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +118,9 @@ def _escalated_stream_retry_delay_s(streak: int) -> float:
 _HEARTBEAT_INTERVAL_S = _heartbeat_interval_s()
 _STREAM_RETRY_DELAY_S = _stream_retry_delay_s()
 _STREAM_RETRY_MAX_DELAY_S = _stream_retry_max_delay_s()
-_MAX_TOKEN_ESTIMATE = 60_000
+# Compatibility override for callers/tests. Production defaults to the model's
+# window and configured context cost ceiling, including exposed tool schemas.
+_MAX_TOKEN_ESTIMATE: int | None = None
 
 
 def _emit(
@@ -218,6 +223,14 @@ def _estimate_tokens(
         output_tokens = 0
 
     return input_tokens, output_tokens
+
+
+def _reported_tokens(usage: object) -> tuple[int, int]:
+    """Read counts for an interrupted request without inventing estimates."""
+    if not isinstance(usage, dict):
+        return 0, 0
+    values = [usage.get(key) for key in ("input_tokens", "output_tokens")]
+    return tuple(value if type(value) is int and value >= 0 else 0 for value in values)
 
 
 def build_worker_prompt(
@@ -579,6 +592,7 @@ def _run_worker_impl(
         agent_config=agent_config,
         include_shell_tools=include_shell_tools,
     )
+    registry = prepare_registry(registry)
 
     # 2. Build system prompt with filtered skills
     skills_loader = SkillsLoader()
@@ -586,6 +600,14 @@ def _run_worker_impl(
     system_prompt = build_worker_prompt(
         agent_spec, upstream_summaries, skill_desc, grounding_block=grounding_block,
     )
+    if isinstance(registry, DeferredToolRegistry):
+        system_prompt += (
+            "\n\n## Tool discovery\n\nOnly loaded tools have full argument schemas in this request. "
+            "The complete available catalog follows. Use load_tools(names=[...]) for all exact "
+            "names needed next, then request those tools through the host protocol in the next turn. "
+            "Loading only exposes schemas and does not execute tools or grant permissions.\n\n"
+            + registry.catalog()
+        )
 
     # 4. Resolve prompt template with user vars (missing vars → LLM infers)
     class _FallbackDict(dict):
@@ -614,6 +636,10 @@ def _run_worker_impl(
     # 6. ReAct loop
     artifact_dir = agent_artifact_dir(run_dir, agent_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    worker_context = WorkerContext(
+        model=agent_spec.model_name or getattr(llm, "model_name", "") or "",
+        artifact_dir=artifact_dir, registry=registry, max_tokens_override=_MAX_TOKEN_ESTIMATE,
+    )
 
     t0 = time.monotonic()
     iteration = 0
@@ -625,21 +651,13 @@ def _run_worker_impl(
     wrap_up_at = max(1, int(max_iterations * 0.8))
     last_assistant_content = ""
 
-    _KEEP_RECENT_TOOLS = 3
     data_tool_calls = 0
     content_filter_count = 0
     consecutive_content_filter_count = 0
     stream_failure_streak = 0
+    context_recovery_used = False
 
     for iteration in range(max_iterations):
-        # Microcompact: clear old tool results to prevent token bloat
-        tool_msgs = [m for m in messages if m.get("role") == "tool"]
-        if len(tool_msgs) > _KEEP_RECENT_TOOLS:
-            for msg in tool_msgs[:-_KEEP_RECENT_TOOLS]:
-                content = msg.get("content", "")
-                if isinstance(content, str) and len(content) > 100:
-                    msg["content"] = "[cleared]"
-
         # Check timeout
         elapsed = time.monotonic() - t0
         if elapsed > timeout:
@@ -680,25 +698,6 @@ def _run_worker_impl(
                 ),
             )
 
-        # Check token estimate
-        token_estimate = len(json.dumps(messages, ensure_ascii=False)) // 4
-        if token_estimate > _MAX_TOKEN_ESTIMATE:
-            summary = last_assistant_content or f"Worker context too large (~{token_estimate} tokens, {iteration} iterations)"
-            summary = _resolve_summary(artifact_dir, summary)
-            _emit(event_callback, "worker_token_limit", agent_id, task_id, {"tokens": token_estimate})
-            _write_summary(artifact_dir, summary)
-            return WorkerResult(
-                status="token_limit",
-                summary=summary,
-                artifact_paths=_collect_artifacts(artifact_dir),
-                iterations=iteration,
-                input_tokens=total_input_tokens,
-                output_tokens=total_output_tokens,
-                content_filter_warnings=compute_content_filter_warnings(
-                    content_filter_count, iteration + 1,
-                ),
-            )
-
         # Inject wrap-up nudge when approaching iteration limit
         if iteration == wrap_up_at:
             remaining = max_iterations - iteration
@@ -724,10 +723,31 @@ def _run_worker_impl(
 
         # On last iteration, call LLM without tool definitions to force text output
         is_last_iteration = iteration == max_iterations - 1
-        tool_defs = None if is_last_iteration else registry.get_definitions()
+        tool_defs = None if is_last_iteration else request_definitions(registry)
+        compacted = worker_context.compact(messages, tool_defs)
+        if compacted:
+            _emit(event_callback, "worker_context_offloaded", agent_id, task_id,
+                  {"iteration": iteration, "results": compacted})
+        token_estimate = worker_context.tokens(messages, tool_defs)
+        context_budget = worker_context.budget(messages, tool_defs)
+        if context_budget.static_overflow or token_estimate > context_budget.total:
+            summary = last_assistant_content or f"Worker context too large (~{token_estimate} tokens, {iteration} iterations)"
+            summary = _resolve_summary(artifact_dir, summary)
+            _emit(event_callback, "worker_token_limit", agent_id, task_id,
+                  {"tokens": token_estimate, "limit": context_budget.total,
+                   "static_tokens": context_budget.static_tokens})
+            _write_summary(artifact_dir, summary)
+            _persist_messages(artifact_dir, messages)
+            return WorkerResult(
+                status="token_limit", summary=summary,
+                artifact_paths=_collect_artifacts(artifact_dir), iterations=iteration,
+                input_tokens=total_input_tokens, output_tokens=total_output_tokens,
+                content_filter_warnings=compute_content_filter_warnings(content_filter_count, iteration + 1),
+            )
 
         # Stream the LLM — moonshot/kimi non-streaming invoke is unreliable
         # (issue #42), and streaming also feeds dashboard live progress.
+        response: LLMResponse | None = None
         try:
             def _on_text_chunk(delta: str) -> None:
                 _emit(event_callback, "worker_text", agent_id, task_id,
@@ -763,6 +783,7 @@ def _run_worker_impl(
                 Raises:
                     ProviderStreamError: When provider streaming fails.
                 """
+                nonlocal total_input_tokens, total_output_tokens
                 remaining_timeout = max(10, int(timeout - (time.monotonic() - t0)))
                 stream_kwargs: dict[str, Any] = {}
                 if cancel_event is not None:
@@ -772,13 +793,22 @@ def _run_worker_impl(
                     interval=_HEARTBEAT_INTERVAL_S,
                     emit=_on_llm_heartbeat,
                 ):
-                    return llm.stream_chat(
-                        messages,
-                        tools=tool_defs,
-                        timeout=remaining_timeout,
-                        on_text_chunk=_on_text_chunk,
-                        **stream_kwargs,
-                    )
+                    try:
+                        return llm.stream_chat(
+                            messages,
+                            tools=tool_defs,
+                            timeout=remaining_timeout,
+                            on_text_chunk=_on_text_chunk,
+                            **stream_kwargs,
+                        )
+                    except ProviderStreamError as exc:
+                        # Each failed request may already have incurred usage.
+                        # Account at this boundary once, including both failed
+                        # attempts, without estimating unseen response tokens.
+                        failed_in, failed_out = _reported_tokens(exc.usage_metadata)
+                        total_input_tokens += failed_in
+                        total_output_tokens += failed_out
+                        raise
 
             # A transient mid-stream hiccup (connection reset) used to be
             # absorbed by ChatLLM's silent non-streaming fallback; it now
@@ -792,36 +822,58 @@ def _run_worker_impl(
             try:
                 response = _stream_once()
             except ProviderStreamError as stream_exc:
-                if not stream_exc.retryable:
-                    raise
-                stream_failure_streak += 1
-                retry_delay_s = (
-                    min(stream_exc.retry_after_s, _STREAM_RETRY_MAX_DELAY_S)
-                    if stream_exc.retry_after_s is not None
-                    else _escalated_stream_retry_delay_s(stream_failure_streak)
-                )
-                logger.warning(
-                    "Provider stream failed for agent=%s task=%s iteration=%d "
-                    "(provider=%s model=%s); retrying once in %.2fs: %s",
-                    agent_id,
-                    task_id,
-                    iteration,
-                    stream_exc.provider,
-                    stream_exc.model,
-                    retry_delay_s,
-                    stream_exc,
-                )
-                # Wait on the cancel event, not time.sleep: the delay now
-                # escalates to the configured cap (30s by default) and a
-                # provider Retry-After can ask for that much on the first
-                # failure. A blocking sleep would hold a cancelled worker
-                # for the whole delay before the check below sees the flag.
-                if cancel_event is not None:
-                    cancel_event.wait(retry_delay_s)
+                if cancel_event is not None and cancel_event.is_set():
+                    pass
+                elif is_context_overflow(str(stream_exc)):
+                    worker_context.learn_limit(str(stream_exc))
+                    if context_recovery_used:
+                        raise
+                    context_recovery_used = True
+                    before = worker_context.tokens(messages, tool_defs)
+                    compacted = worker_context.compact(messages, tool_defs, force=True)
+                    budget = worker_context.budget(messages, tool_defs)
+                    after = worker_context.tokens(messages, tool_defs)
+                    # A retry must actually shrink old, already-seen evidence.
+                    # Never sacrifice the fresh batch just to make a call fit.
+                    if not compacted or after >= before or budget.static_overflow or after > budget.total:
+                        raise
+                    _emit(event_callback, "worker_context_offloaded", agent_id, task_id,
+                          {"iteration": iteration, "results": compacted, "reason": "context_overflow"})
+                    if cancel_event is None or not cancel_event.is_set():
+                        if time.monotonic() - t0 >= timeout:
+                            raise TimeoutError("Worker time budget exhausted before context retry") from stream_exc
+                        response = _stream_once()
                 else:
-                    time.sleep(retry_delay_s)
-                if cancel_event is None or not cancel_event.is_set():
-                    response = _stream_once()
+                    if not stream_exc.retryable:
+                        raise
+                    stream_failure_streak += 1
+                    retry_delay_s = (
+                        min(stream_exc.retry_after_s, _STREAM_RETRY_MAX_DELAY_S)
+                        if stream_exc.retry_after_s is not None
+                        else _escalated_stream_retry_delay_s(stream_failure_streak)
+                    )
+                    logger.warning(
+                        "Provider stream failed for agent=%s task=%s iteration=%d "
+                        "(provider=%s model=%s); retrying once in %.2fs: %s",
+                        agent_id,
+                        task_id,
+                        iteration,
+                        stream_exc.provider,
+                        stream_exc.model,
+                        retry_delay_s,
+                        stream_exc,
+                    )
+                    # Wait on the cancel event, not time.sleep: the delay now
+                    # escalates to the configured cap (30s by default) and a
+                    # provider Retry-After can ask for that much on the first
+                    # failure. A blocking sleep would hold a cancelled worker
+                    # for the whole delay before the check below sees the flag.
+                    if cancel_event is not None:
+                        cancel_event.wait(retry_delay_s)
+                    else:
+                        time.sleep(retry_delay_s)
+                    if cancel_event is None or not cancel_event.is_set():
+                        response = _stream_once()
             else:
                 stream_failure_streak = 0
 
@@ -829,6 +881,11 @@ def _run_worker_impl(
             # stop now, without executing any of its tool calls — mirrors
             # AgentLoop's contract for the identical should_cancel signal.
             if cancel_event is not None and cancel_event.is_set():
+                # A cancellation during retry backoff has no response; its
+                # failed request was counted in _stream_once already.
+                cancelled_in, cancelled_out = _reported_tokens(getattr(response, "usage_metadata", None))
+                total_input_tokens += cancelled_in
+                total_output_tokens += cancelled_out
                 cancelled_summary = last_assistant_content or f"Cancelled after {iteration} iterations"
                 summary = _resolve_summary(artifact_dir, cancelled_summary)
                 _emit(event_callback, "worker_cancelled", agent_id, task_id, {"iterations": iteration})
@@ -848,9 +905,17 @@ def _run_worker_impl(
         except Exception as exc:
             error_msg = f"LLM call failed at iteration {iteration}: {exc}"
             logger.warning(error_msg)
-            _emit(event_callback, "worker_failed", agent_id, task_id, {"error": error_msg})
+            # Context/time exhaustion is terminal, not an invitation for the
+            # runtime to restart this entire worker under its failure retry.
+            elapsed = time.monotonic() - t0
+            failed_status = "token_limit" if is_context_overflow(str(exc)) else (
+                "timeout" if elapsed >= timeout else "failed"
+            )
+            _emit(event_callback, f"worker_{failed_status}", agent_id, task_id,
+                  {"error": error_msg, "elapsed": elapsed})
+            _persist_messages(artifact_dir, messages)
             return WorkerResult(
-                status="failed",
+                status=failed_status,
                 summary=_resolve_summary(artifact_dir, last_assistant_content or ""),
                 artifact_paths=_collect_artifacts(artifact_dir),
                 iterations=iteration,
@@ -861,6 +926,10 @@ def _run_worker_impl(
                     content_filter_count, iteration + 1,
                 ),
             )
+
+        # Successful requests have seen the complete pending batch. Anchor
+        # before appending this response or exposing additional schemas.
+        worker_context.observe(messages, tool_defs, getattr(response, "usage_metadata", None))
 
         # Accumulate token counts
         iter_in, iter_out = _estimate_tokens(messages, response)
@@ -997,8 +1066,11 @@ def _run_worker_impl(
                 emit=_on_heartbeat,
             ):
                 result = registry.execute(tc.name, args)
+            # Scrub before model history and persisted conversation are built;
+            # truncation must not cut away the label identifying a credential.
+            result = redact_tool_result(result)
             result_is_error = _is_error_result(result)
-            if tc.name != "load_skill" and not result_is_error:
+            if tc.name not in {"load_skill", "load_tools"} and not result_is_error:
                 data_tool_calls += 1
             tc_elapsed = time.monotonic() - tc_start
             _emit(
@@ -1018,9 +1090,10 @@ def _run_worker_impl(
             )
             messages.append(
                 ContextBuilder.format_tool_result(
-                    tc.id, tc.name, truncate_tool_result(result)
+                    tc.id, tc.name, deliver_tool_result(result, artifact_dir, registry)
                 )
             )
+            worker_context.pending.add(tc.id)
 
     # Content filter ratio tracking
     content_filter_warnings = compute_content_filter_warnings(
@@ -1097,13 +1170,10 @@ def _remote_tool_metadata(registry: ToolRegistry, tool_name: str) -> dict[str, s
 def _preview_tool_arguments(arguments: dict) -> dict[str, str]:
     """Return a short, redacted argument preview for streamed events."""
     preview: dict[str, str] = {}
-    for key, value in arguments.items():
+    for key, value in redact_payload(arguments).items():
         if key == "run_dir":
             continue
-        if is_sensitive_arg(key):
-            preview[key] = "[redacted]"
-            continue
-        preview[key] = _truncate_preview(redact_payload(value))
+        preview[key] = _truncate_preview(value)
     return preview
 
 

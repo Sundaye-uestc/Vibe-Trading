@@ -163,13 +163,14 @@ def _extract_retry_after_s(original: Exception) -> Optional[float]:
 class ProviderStreamError(RuntimeError):
     """Raised when provider streaming fails before a complete response."""
 
-    def __init__(self, *, provider: str, model: str, original: Exception) -> None:
+    def __init__(self, *, provider: str, model: str, original: Exception, usage_metadata: dict | None = None) -> None:
         """Initialize a provider-contextual stream error.
 
         Args:
             provider: Effective provider name.
             model: Effective model name.
             original: Original exception from the stream path.
+            usage_metadata: Provider usage already received before failure.
 
         Attributes:
             retry_after_s: Provider-suggested Retry-After delay in seconds,
@@ -179,6 +180,7 @@ class ProviderStreamError(RuntimeError):
         self.provider = provider
         self.model = model
         self.original = original
+        self.usage_metadata = usage_metadata
         self.status_code: Optional[int] = getattr(original, "status_code", None)
         self.retry_after_s: Optional[float] = _extract_retry_after_s(original)
         safe_message = _redact_provider_error(str(original))
@@ -515,6 +517,8 @@ class ChatLLM:
         Returns:
             Parsed ``LLMResponse``.
         """
+        accumulated = None
+        received_usage = None
         try:
             llm = self._llm.bind_tools(tools) if tools else self._llm
             config = {"timeout": timeout} if timeout else {}
@@ -525,6 +529,11 @@ class ChatLLM:
             cancelled = False
             last_chunk_ts = _time.monotonic()
             for chunk in llm.stream(messages, config=config, **call_kwargs):
+                # Account for every received chunk, including the one on which
+                # cancellation/timeout is observed, without releasing its text.
+                observed = chunk if accumulated is None else accumulated + chunk
+                if getattr(observed, "usage_metadata", None) is not None:
+                    received_usage = observed.usage_metadata
                 now = _time.monotonic()
                 if idle_timeout_s and now - last_chunk_ts > idle_timeout_s:
                     # No delta for too long: the provider is stalled, not
@@ -552,10 +561,10 @@ class ChatLLM:
                 reasoning = getattr(chunk, "additional_kwargs", {}).get("reasoning_content")
                 if reasoning and not chunk.content and on_reasoning_chunk:
                     on_reasoning_chunk(reasoning)
-                accumulated = chunk if accumulated is None else accumulated + chunk
+                accumulated = observed
             if accumulated is None:
                 if cancelled:
-                    return LLMResponse(content="", tool_calls=[], finish_reason="stop")
+                    return LLMResponse(content="", tool_calls=[], finish_reason="stop", usage_metadata=received_usage)
                 # Endpoint streamed nothing (no SSE support); a non-streaming
                 # invoke still works — fall back rather than return empty.
                 logger.warning(
@@ -563,12 +572,35 @@ class ChatLLM:
                     "non-streaming invoke."
                 )
                 return self._parse_response(llm.invoke(messages, config=config, **call_kwargs))
+            # A clean socket EOF is not a completed Chat Completions response.
+            # Without this check the parser defaults missing metadata to stop
+            # and a truncated answer or tool call can be released as success.
+            metadata = getattr(accumulated, "response_metadata", {}) or {}
+            if (not cancelled and getattr(self._llm, "_llm_type", None) == "openai-chat"
+                    and not (metadata.get("finish_reason") or metadata.get("stop_reason")
+                             or metadata.get("status") in {"completed", "incomplete", "failed"})):
+                raise ConnectionError("Provider stream ended without a terminal finish reason")
             response = self._parse_response(accumulated)
-            if pending_text and not (response.has_tool_calls and response.content == ""):
+            stopped_early = (
+                any(str(metadata.get(key) or "").endswith(("length", "max_tokens"))
+                    for key in ("finish_reason", "stop_reason"))
+                or metadata.get("status") in {"incomplete", "failed"}
+            )
+            if not cancelled and response.has_tool_calls and stopped_early:
+                # LangChain repairs partial JSON arguments. A token-limited
+                # tool chunk may therefore look executable after parsing even
+                # though the provider never completed that request.
+                raise ConnectionError("Provider stream stopped before completing its tool calls")
+            if cancelled:
+                response.usage_metadata = received_usage
+                # Partial prose can remain available to the caller, but a
+                # cancelled/incomplete tool call is never executable.
+                response.tool_calls = []
+            if not cancelled and pending_text and not (response.has_tool_calls and response.content == ""):
                 on_text_chunk(pending_text)
             return response
         except Exception as exc:
-            if _is_no_stream_chunk_error(exc):
+            if accumulated is None and _is_no_stream_chunk_error(exc):
                 # Provider streamed zero chunks (endpoint lacks real SSE); a
                 # non-streaming invoke still returns a valid response.
                 logger.warning(
@@ -580,7 +612,9 @@ class ChatLLM:
             _cfg = get_env_config()
             provider = _cfg.llm.langchain_provider.strip().lower() or "openai"
             model = self.model_name or _cfg.llm.langchain_model_name.strip() or "(unset)"
-            raise ProviderStreamError(provider=provider, model=model, original=exc) from exc
+            raise ProviderStreamError(
+                provider=provider, model=model, original=exc, usage_metadata=received_usage,
+            ) from exc
 
     @staticmethod
     def _tool_call_thought_signature_maps(ai_message: Any) -> tuple[dict[str, str], dict[int, str]]:

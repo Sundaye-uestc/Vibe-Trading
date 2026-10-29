@@ -25,7 +25,7 @@ from fastmcp.client.auth import OAuth
 from fastmcp.client.transports.http import StreamableHttpTransport
 from fastmcp.client.transports.sse import SSETransport
 from fastmcp.client.transports.stdio import StdioTransport
-from mcp.client.auth.exceptions import OAuthRegistrationError
+from mcp.client.auth.exceptions import OAuthFlowError, OAuthRegistrationError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyHttpUrl, ValidationError
 
@@ -265,7 +265,8 @@ def test_build_client_yields_oauth_streamable_transport() -> None:
     assert transport.auth._client_metadata_url == "https://example.com/oauth/client.json"
 
 
-def test_ibkr_oauth_registration_uses_browser_headers(tmp_path) -> None:
+@pytest.mark.parametrize("advertised_issuer", ["https://api.ibkr.com", "https://api.ibkr.com/oauth2"])
+def test_ibkr_oauth_registration_uses_browser_headers(tmp_path, advertised_issuer) -> None:
     cfg = MCPServerConfig.model_validate(
         {
             "type": "streamableHttp",
@@ -296,17 +297,21 @@ def test_ibkr_oauth_registration_uses_browser_headers(tmp_path) -> None:
                 },
                 request=request,
             )
+        # Updated IBKR metadata advertises the same issuer as discovery.
+        # The older /oauth2 value is correctly rejected by mcp>=1.30.
         if url == f"{cfg.url}/.well-known/oauth-protected-resource":
             return httpx.Response(
                 200,
                 json={
                     "resource": cfg.url,
-                    "authorization_servers": ["https://api.ibkr.com/oauth2"],
-                    "scopes_supported": ["mcp.read"],
+                    "authorization_servers": [advertised_issuer],
+                    "scopes_supported": ["mcp.read", "mcp.write", "mcp.orders.submit"],
+                    "bearer_methods_supported": ["header"],
                 },
                 request=request,
             )
         if url in {
+            "https://api.ibkr.com/.well-known/oauth-authorization-server",
             "https://api.ibkr.com/.well-known/oauth-authorization-server/oauth2",
             "https://api.ibkr.com/oauth2/.well-known/oauth-authorization-server",
         }:
@@ -341,9 +346,14 @@ def test_ibkr_oauth_registration_uses_browser_headers(tmp_path) -> None:
                 headers={"Accept": "application/json, text/event-stream"},
             )
 
-    with pytest.raises(OAuthRegistrationError):
+    expected = OAuthRegistrationError if advertised_issuer == "https://api.ibkr.com" else OAuthFlowError
+    with pytest.raises(expected):
         asyncio.run(run())
 
+    if advertised_issuer != "https://api.ibkr.com":
+        # Issuer validation must fail before contacting client registration.
+        assert seen == {"mcp-accept": "application/json, text/event-stream"}
+        return
     assert seen == {
         "user-agent": "Mozilla/5.0",
         "origin": "https://api.ibkr.com",
@@ -508,21 +518,12 @@ def test_stdio_path_unchanged() -> None:
     assert isinstance(transport, StdioTransport)
 
 
-def test_mcp_version_is_capped_below_the_strict_issuer_check() -> None:
-    """The IBKR OAuth path depends on this cap; a silent bump breaks the broker.
+def test_mcp_floor_includes_the_session_reclamation_fix() -> None:
+    """Exclude SDKs with unbounded stateful HTTP sessions (CVE-2026-59951).
 
-    mcp 1.30.0 enforces RFC 8414 section 3.3 — an authorization server's
-    metadata `issuer` must equal the issuer used to build the well-known URL.
-    IBKR's official MCP server advertises the authorization server
-    ``https://api.ibkr.com/oauth2`` while its metadata (both well-known paths,
-    verified live 2026-09-08) reports ``"issuer": "https://api.ibkr.com"``, so
-    discovery raises ``OAuthFlowError`` before any token is requested and no
-    IBKR connection can be established.
-
-    ``test_ibkr_oauth_registration_uses_browser_headers`` above is the same
-    finding at the fixture level, and its fixture mirrors the live document —
-    so making it pass by editing the fixture would hide a broken broker
-    behind a green suite. This test guards the actual remedy instead.
+    IBKR's updated issuer metadata permits the 1.30 SDK. Keep that minimum
+    in the declared dependencies so a fresh install also gets session expiry,
+    admission limits and cleanup of terminated sessions.
     """
     import tomllib
     from pathlib import Path
@@ -533,15 +534,15 @@ def test_mcp_version_is_capped_below_the_strict_issuer_check() -> None:
     dependencies = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"][
         "dependencies"
     ]
-    caps = [
+    requirements = [
         Requirement(entry)
         for entry in dependencies
         if Requirement(entry).name == "mcp"
     ]
-    assert caps, "the mcp cap is gone from pyproject dependencies"
-    assert not caps[0].specifier.contains("1.30.0"), (
-        f"mcp 1.30.0 satisfies {caps[0]}; IBKR OAuth discovery fails on it"
+    assert requirements, "the mcp requirement is missing from project dependencies"
+    assert not requirements[0].specifier.contains("1.29.1"), (
+        f"{requirements[0]} admits an SDK with unbounded HTTP sessions"
     )
-    assert caps[0].specifier.contains("1.29.1"), (
-        f"{caps[0]} excludes the last working version"
+    assert requirements[0].specifier.contains("1.30.0"), (
+        f"{requirements[0]} excludes the fixed SDK release"
     )

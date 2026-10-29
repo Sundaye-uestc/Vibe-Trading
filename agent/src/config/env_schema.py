@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 from enum import Enum
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
@@ -71,6 +71,16 @@ def _parse_responses_api_bool(v: Any) -> Any:
 
 
 ResponsesApiBool = Annotated[bool, BeforeValidator(_parse_responses_api_bool)]
+
+
+def _reject_boolean_context_limit(value: Any) -> Any:
+    """A boolean is not a meaningful prompt/window token limit."""
+    if isinstance(value, bool):
+        raise ValueError("context token limits must be integers, not booleans")
+    return value
+
+
+ContextTokenLimit = Annotated[int, BeforeValidator(_reject_boolean_context_limit)]
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +189,13 @@ class DataConfig(_EnvBase):
     """
 
     tushare_token: str = Field(alias="TUSHARE_TOKEN", default="")
+    # Opt-in, read-only calendar/raw-price source for paper accounts.
+    clickhouse_host: str = Field(alias="CLICKHOUSE_HOST", default="")
+    clickhouse_port: int | None = Field(alias="CLICKHOUSE_PORT", default=None, ge=1, le=65535)
+    clickhouse_user: str = Field(alias="CLICKHOUSE_USER", default="default")
+    clickhouse_password: str = Field(alias="CLICKHOUSE_PASSWORD", default="", repr=False)
+    clickhouse_database: str = Field(alias="CLICKHOUSE_DATABASE", default="default")
+    clickhouse_timeout_seconds: float = Field(alias="CLICKHOUSE_TIMEOUT_SECONDS", default=10.0, gt=0, le=120)
     ccxt_exchange: str = Field(alias="CCXT_EXCHANGE", default="binance")
     ccxt_timeout_ms: int = Field(alias="CCXT_TIMEOUT_MS", default=15000)
     ccxt_fetch_budget_s: float = Field(alias="CCXT_FETCH_BUDGET_S", default=60.0)
@@ -395,6 +412,16 @@ class AgentTuningConfig(_EnvBase):
     """
 
     token_threshold: int = Field(alias="TOKEN_THRESHOLD", default=40000)
+    vibe_trading_tool_loading: Literal["lazy", "eager"] = Field(
+        alias="VIBE_TRADING_TOOL_LOADING", default="lazy",
+    )
+    vibe_trading_context_window: ContextTokenLimit | None = Field(
+        alias="VIBE_TRADING_CONTEXT_WINDOW", default=None, gt=0,
+    )
+    # Bound prompt growth for cost even when a model exposes a larger window.
+    vibe_trading_context_max_tokens: ContextTokenLimit = Field(
+        alias="VIBE_TRADING_CONTEXT_MAX_TOKENS", default=200_000, gt=0,
+    )
     vt_heartbeat_interval_s: float = Field(alias="VT_HEARTBEAT_INTERVAL_S", default=3.0)
     vt_reasoning_delta_min_interval_s: float = Field(
         alias="VT_REASONING_DELTA_MIN_INTERVAL_S", default=1.0,

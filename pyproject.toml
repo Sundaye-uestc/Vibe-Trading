@@ -59,15 +59,11 @@ dependencies = [
     # session snapshot shape; tests construct it the 2.x way. Cap until the
     # adaptation lands.
     "fastmcp>=2.14.0,<4.0.0",
-    # mcp 1.30.0 enforces RFC 8414 section 3.3 strictly: the `issuer` in an
-    # authorization server's metadata must equal the issuer used to build the
-    # well-known URL. IBKR's official MCP server advertises the authorization
-    # server https://api.ibkr.com/oauth2 while its metadata (verified live on
-    # 2026-09-08 at both well-known paths) says `"issuer": "https://api.ibkr.com"`,
-    # so discovery raises OAuthFlowError and the IBKR OAuth connection cannot be
-    # established at all. The cap is on the real broker path, not on the test
-    # that caught it — pulled in transitively through fastmcp.
-    "mcp<1.30",
+    # 1.30 fixes unbounded stateful HTTP sessions (CVE-2026-59951).
+    # The previous cap worked around IBKR's mismatched OAuth issuer; its
+    # protected-resource metadata now advertises the matching issuer.
+    # Keep the 1.x API used by our FastMCP adapters and transport tests.
+    "mcp>=1.30.0,<2",
     "ddgs>=6.0.0",
     "jinja2>=3.1.0",
     "matplotlib>=3.7.0",
@@ -99,6 +95,9 @@ include = ["src*", "backtest*", "cli*", "evals*"]
 
 [tool.setuptools.package-data]
 "src" = [
+    "agent/*.json",
+    "tools/paper_trade/*.json",
+    "tools/paper_trade/*.md",
     "channels/fonts/*.ttf",
     "channels/fonts/*.txt",
     "channels/fonts/*.md",
@@ -279,6 +278,7 @@ pythonpath = ["agent"]
 markers = [
     "unit: Unit tests (fast, no network)",
     "integration: Integration tests (may need network)",
+    "slow: Bounded performance or larger fixture regression tests",
 ]
 
 [tool.ruff]

@@ -23,7 +23,6 @@ import shutil
 import sys
 import threading
 import time as _time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
@@ -33,6 +32,12 @@ from src.agent.memory import WorkspaceMemory
 from src.agent.progress import HeartbeatTimer, ProgressEvent, _set_emitter
 from src.agent.tool_progress import RECOVERY_MESSAGE, ToolProgress
 from src.agent.tools import ToolRegistry
+from src.agent.tool_loading import prepare_registry, request_definitions
+from src.agent.context_budget import (
+    CompactionBudget, ContextMeter, estimate_tokens as estimate_context_tokens,
+    is_context_overflow, parse_context_limit, resolve_window,
+)
+from src.agent.result_artifacts import deliver_tool_result
 from src.agent.trace import TraceWriter
 from src.core.state import RunStateStore
 from src.goal.context import (
@@ -50,7 +55,6 @@ from src.providers.content_filter import (
 from src.config.accessor import get_env_config, get_env_value
 from src.config.paths import get_runs_dir, get_sessions_dir
 from src.tools.background_tools import get_background_manager
-from src.config.limits import truncate_tool_result
 from src.tools.path_utils import safe_run_dir
 from src.tools.redaction import redact_payload, redact_tool_result
 
@@ -259,101 +263,14 @@ def _stall_timeout_seconds() -> float:
 logger = logging.getLogger(__name__)
 
 
-def _coerce_usage_int(value: Any) -> int:
-    """Coerce provider token counts to non-negative ints."""
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _normalize_llm_usage(usage: Any) -> dict[str, int] | None:
-    """Normalize provider-reported usage metadata without estimating tokens."""
-    if usage is None:
-        return None
-    if not isinstance(usage, dict):
-        try:
-            usage = dict(usage)
-        except (TypeError, ValueError):
-            return None
-
-    input_tokens = _coerce_usage_int(usage.get("input_tokens"))
-    output_tokens = _coerce_usage_int(usage.get("output_tokens"))
-    total_tokens = _coerce_usage_int(usage.get("total_tokens"))
-    if total_tokens == 0 and (input_tokens or output_tokens):
-        total_tokens = input_tokens + output_tokens
-    if not (input_tokens or output_tokens or total_tokens):
-        return None
-    normalized: dict[str, int] = {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": total_tokens,
-    }
-    details = usage.get("input_token_details")
-    if isinstance(details, dict):
-        if details.get("cache_read") is not None:
-            normalized["cache_read_tokens"] = _coerce_usage_int(details["cache_read"])
-        creation_keys = ("cache_creation", "ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
-        if any(details.get(key) is not None for key in creation_keys):
-            normalized["cache_creation_tokens"] = sum(
-                _coerce_usage_int(details.get(key)) for key in creation_keys
-            )
-    return normalized
-
-
-def _new_llm_usage_summary(llm: Any) -> dict[str, Any]:
-    """Create the run-scoped provider usage accumulator."""
-    from src.config.accessor import get_env_config
-    cfg = get_env_config()
-    provider = cfg.llm.langchain_provider.strip() or "openai"
-    model = getattr(llm, "model_name", None) or cfg.llm.langchain_model_name.strip()
-    return {
-        "provider": provider,
-        "model": model,
-        "totals": {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "calls": 0,
-        },
-        "per_iteration": [],
-    }
-
-
-def _record_llm_usage(
-    run_dir: Path,
-    summary: dict[str, Any],
-    usage: Any,
-    iteration: int,
-) -> dict[str, int] | None:
-    """Accumulate and persist one provider-reported usage event."""
-    normalized = _normalize_llm_usage(usage)
-    if normalized is None:
-        return None
-
-    totals = summary.setdefault("totals", {})
-    totals["input_tokens"] = int(totals.get("input_tokens") or 0) + normalized["input_tokens"]
-    totals["output_tokens"] = int(totals.get("output_tokens") or 0) + normalized["output_tokens"]
-    totals["total_tokens"] = int(totals.get("total_tokens") or 0) + normalized["total_tokens"]
-    totals["calls"] = int(totals.get("calls") or 0) + 1
-    for key in ("cache_read_tokens", "cache_creation_tokens"):
-        if key in normalized:
-            totals[key] = int(totals.get(key) or 0) + normalized[key]
-    summary.setdefault("per_iteration", []).append({"iter": iteration, **normalized})
-    summary["updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-    try:
-        path = run_dir / LLM_USAGE_ARTIFACT
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        tmp_path.replace(path)
-    except OSError as exc:
-        logger.debug("LLM usage artifact write skipped: %s", exc)
-
-    return normalized
+# Keep these names importable from loop for existing callers/tests.
+from src.agent.llm_usage import (  # noqa: E402, F401
+    _coerce_usage_int,
+    _normalize_llm_usage,
+    _new_llm_usage_summary,
+    _record_llm_usage,
+    _record_unreported_llm_call,
+)
 
 
 def _format_timeout(seconds: float) -> str:
@@ -536,7 +453,11 @@ def _is_cleared(content: Any) -> bool:
     return isinstance(content, str) and content.startswith(_CLEARED_PREFIX)
 
 
-def _microcompact(messages: list) -> list:
+def _microcompact(
+    messages: list, *, target_tokens: int | None = None,
+    measure: Callable[[list], int] | None = None,
+    preserve_tool_call_ids: set[str] | None = None,
+) -> list:
     """Layer 1: silently prune old tool results, keeping the most recent N intact.
 
     Args:
@@ -553,7 +474,15 @@ def _microcompact(messages: list) -> list:
         return []
     newly_cleared = []
     for msg in tool_msgs[:-keep_recent]:
+        if target_tokens is not None and measure is not None and measure(messages) <= target_tokens:
+            break
+        if msg.get("tool_call_id") in (preserve_tool_call_ids or ()):
+            continue
         content = msg.get("content", "")
+        receipt = _slim_result_receipt(content)
+        if receipt is not None:
+            msg["content"] = receipt
+            continue
         # Skip a result already cleared: the marker is itself >100 chars, so
         # re-clearing it would rewrite the recorded original size with the
         # MARKER's length ("returned 287 characters") and re-report the tool
@@ -584,7 +513,21 @@ def _result_data_gone(content: Any) -> bool:
     return _is_cleared(content) or content == _STUB_RESULT_CONTENT
 
 
-def _context_collapse(messages: list) -> None:
+def _slim_result_receipt(content: Any) -> str | None:
+    """Keep the complete-result locator intact while dropping its preview."""
+    if not isinstance(content, str):
+        return None
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("_result_file"), dict):
+        return None
+    payload.pop("_preview", None)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _context_collapse(messages: list, *, preserve_tool_call_ids: set[str] | None = None) -> None:
     """Layer 2: fold long text blocks in older messages without LLM call.
 
     Preserves head + tail of large text, collapses the middle.
@@ -596,7 +539,13 @@ def _context_collapse(messages: list) -> None:
     if len(messages) <= COLLAPSE_PRESERVE_RECENT + 1:
         return
     for msg in messages[1:-COLLAPSE_PRESERVE_RECENT]:
+        if msg.get("role") == "tool" and msg.get("tool_call_id") in (preserve_tool_call_ids or ()):
+            continue
         content = msg.get("content")
+        receipt = _slim_result_receipt(content) if msg.get("role") == "tool" else None
+        if receipt is not None:
+            msg["content"] = receipt
+            continue
         if not isinstance(content, str) or len(content) <= COLLAPSE_TEXT_MIN:
             continue
         if _result_data_gone(content):
@@ -650,7 +599,10 @@ def _msg_estimate_chars(msg: dict) -> int:
     return size
 
 
-def _tail_cut_index(body: list, budget: int = TAIL_TOKEN_BUDGET) -> int:
+def _tail_cut_index(
+    body: list, budget: int = TAIL_TOKEN_BUDGET,
+    estimator: Callable[[Any], int] | None = None,
+) -> int:
     """First index of the preserved ``body`` tail that fits ``budget`` tokens.
 
     Walks back from the end accumulating each message's estimated tokens and
@@ -662,7 +614,7 @@ def _tail_cut_index(body: list, budget: int = TAIL_TOKEN_BUDGET) -> int:
     accumulated = 0
     cut_idx = len(body)
     for i in range(len(body) - 1, -1, -1):
-        msg_tokens = (_msg_estimate_chars(body[i]) // 4) + 10
+        msg_tokens = estimator(body[i]) if estimator else (_msg_estimate_chars(body[i]) // 4) + 10
         if accumulated + msg_tokens > budget:
             cut_idx = i + 1
             break
@@ -1121,7 +1073,7 @@ class AgentLoop:
                 to :data:`DEFAULT_MAX_ITERATIONS`.
             persistent_memory: PersistentMemory for cross-session recall.
         """
-        self.registry = registry
+        self.registry = prepare_registry(registry)
         self.llm = llm
         runtime_snapshot = getattr(llm, "runtime_snapshot", None)
         if not isinstance(runtime_snapshot, LLMRuntimeSnapshot):
@@ -1167,6 +1119,15 @@ class AgentLoop:
         self._released_fallback_reason: str | None = None
         self._written_files: set[str] = set()
         self._stall_reason: str | None = None
+        self._budget_stop_reason: str | None = None
+        self._llm_usage_summary = _new_llm_usage_summary(self.llm)
+        self._goal_usage_callback = None
+        self._context_meter = ContextMeter()
+        self._tool_schema_tokens = 0
+        self._learned_context_window: int | None = None
+        self._compacted_to_tokens: int | None = None
+        self._pending_tool_observations: set[str] = set()
+        self._saved_result_locators: dict[str, dict[str, Any]] = {}
         self._last_activity_wall: float = 0.0
         self._run_done = threading.Event()
         # Identical deterministic tool calls (e.g. financial_rigor calc with
@@ -1248,13 +1209,16 @@ class AgentLoop:
         except Exception as exc:  # noqa: BLE001
             logger.warning("run manifest not written (%s: %s)", type(exc).__name__, exc)
 
-    def run(self, user_message: str, history: Optional[List[Dict[str, Any]]] = None, session_id: str = "") -> Dict[str, Any]:
+    def run(self, user_message: str, history: Optional[List[Dict[str, Any]]] = None, session_id: str = "",
+            *, prior_observations: tuple = ()) -> Dict[str, Any]:
         """Run the ReAct loop synchronously.
 
         Args:
             user_message: User message.
             history: Prior conversation messages.
             session_id: Session ID.
+            prior_observations: Server-verified historical tool results from
+                this session. Never populated from ordinary history text.
 
         Returns:
             Execution result dict.
@@ -1273,12 +1237,21 @@ class AgentLoop:
         self._released_fallback_reason = None
         self._written_files = set()
         self._stall_reason = None
+        self._budget_stop_reason = None
+        self._goal_usage_callback = None
         self._last_activity_wall = _time.time()
         self._run_done = threading.Event()
         self._called_identical = {}
         self._identical_cached_at = {}
         self._tool_progress = ToolProgress()
         run_started_wall = _time.time()
+        self.registry = prepare_registry(self.registry)
+        self._context_meter = ContextMeter()
+        self._tool_schema_tokens = estimate_context_tokens(request_definitions(self.registry))
+        self._learned_context_window = None
+        self._compacted_to_tokens = None
+        self._pending_tool_observations = set()
+        self._saved_result_locators = {}
 
         state_store = RunStateStore()
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1298,6 +1271,13 @@ class AgentLoop:
                 get_env_config().agent_tuning.vibe_contextual_identity_constraints
             ),
         )
+        if prior_observations:
+            from src.agent.recovery_evidence import recovery_context
+
+            restored = self._grounding.restore_prior_observations(prior_observations)
+            recovered_context = recovery_context(restored)
+            if recovered_context:
+                history = [*(history or []), {"role": "user", "content": recovered_context}]
 
         context = ContextBuilder(self.registry, self.memory,
                                   persistent_memory=self._persistent_memory)
@@ -1343,7 +1323,45 @@ class AgentLoop:
         content_filter_circuit_breaker = False
         empty_model_response_iter: int | None = None
         consecutive_empty_responses = 0
-        llm_usage_summary = _new_llm_usage_summary(self.llm)
+        self._llm_usage_summary = _new_llm_usage_summary(self.llm)
+
+        def check_goal_token_budget(snapshot: dict[str, Any] | None) -> None:
+            goal = (snapshot or {}).get("goal") or {}
+            limit = goal.get("token_budget")
+            if limit is not None and int(goal.get("tokens_used") or 0) >= limit:
+                self._budget_stop_reason = (
+                    "goal_token_budget_exhausted: the research goal's token budget "
+                    "has been reached. End the goal to continue; a new goal can set a larger budget."
+                )
+
+        if active_goal_id and session_id:
+            from src.goal import GoalStore
+
+            goal_store = GoalStore()
+            check_goal_token_budget(goal_store.get_goal_snapshot(active_goal_id))
+
+        def account_goal_usage(usage_delta: dict[str, int] | None) -> None:
+            nonlocal goal_store, goal_turn_accounted
+            if not (active_goal_id and session_id):
+                return
+            token_delta = int(usage_delta.get("total_tokens") or 0) if usage_delta else 0
+            turn_delta = 0 if goal_turn_accounted else 1
+            if not (token_delta or turn_delta):
+                return
+            try:
+                goal_store.account_usage(
+                    session_id=session_id, goal_id=active_goal_id, expected_goal_id=active_goal_id,
+                    token_delta=token_delta, turn_delta=turn_delta,
+                )
+                goal_turn_accounted = True
+                snapshot = goal_store.get_goal_snapshot(active_goal_id)
+                check_goal_token_budget(snapshot)
+                if snapshot is not None:
+                    self._emit("goal.updated", {"goal": snapshot["goal"], "snapshot": snapshot})
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Goal usage accounting skipped: %s", exc)
+
+        self._goal_usage_callback = account_goal_usage
         last_response_model: str | None = None
         goal_continuations = 0
         goal_last_progress: tuple[int, int] | None = None
@@ -1378,6 +1396,8 @@ class AgentLoop:
         stream_failure_streak = 0
         try:
             while iteration < self.max_iterations:
+                if self._budget_stop_reason is not None:
+                    break
                 if self._cancel_event.is_set():
                     trace.write({"type": "cancelled", "iter": self._run_iteration + 1})
                     logger.info("AgentLoop cancelled by user")
@@ -1393,29 +1413,6 @@ class AgentLoop:
                 if notifs:
                     notif_text = "\n".join(f"[bg:{n['task_id']}] {n['status']}: {n['result']}" for n in notifs)
                     messages.append({"role": "user", "content": f"<background-results>\n{notif_text}\n</background-results>\n\n<system>Continue processing with the background results above.</system>"})
-
-                # Estimate transcript size once; each compaction layer below
-                # escalates only when its own token threshold is crossed.
-                tokens = estimate_tokens(messages)
-
-                # Layer 1: microcompact — prune old tool results only under
-                # memory pressure, so short, low-pressure runs keep their full
-                # tool history available for the model to reference instead of
-                # having every result past the most recent few cleared.
-                if tokens > int(_token_threshold() * 0.5):
-                    self._microcompact_and_unblock(messages, trace, iteration)
-                    tokens = estimate_tokens(messages)
-
-                # Layer 2: context collapse (fold long text, zero API cost)
-                if tokens > int(_token_threshold() * 0.7):
-                    _context_collapse(messages)
-                    tokens = estimate_tokens(messages)
-
-                # Layer 3: auto_compact (token threshold exceeded)
-                _tok_threshold = _token_threshold()
-                if tokens > _tok_threshold:
-                    logger.info(f"Auto compact triggered: {tokens} tokens > {_tok_threshold}")
-                    self._auto_compact(messages, run_dir, trace, iteration=current_iter)
 
                 logger.info(f"ReAct iteration {iteration}/{self.max_iterations}")
 
@@ -1519,23 +1516,35 @@ class AgentLoop:
 
                 # On last iteration, drop tool definitions to force text output
                 is_last_iteration = (iteration == self.max_iterations)
-                tool_defs = None if is_last_iteration else self.registry.get_definitions()
+                tool_defs = None if is_last_iteration else request_definitions(self.registry)
+                self._tool_schema_tokens = estimate_context_tokens(tool_defs) if tool_defs else 0
                 if is_last_iteration:
                     trace.write({"type": "forced_text_only", "iter": current_iter})
+                # Measure exactly this request, after all steering messages and
+                # after dropping tool schemas for the final text-only turn.
+                self._compact_to_budget(messages, run_dir, trace, iteration, current_iter)
+                if self._cancel_event.is_set() or self._budget_stop_reason is not None:
+                    break
 
                 _llm_timeout_s = _llm_timeout_seconds()
                 llm_timeout = _llm_timeout_s if _llm_timeout_s > 0 else None
 
+                def stream_request():
+                    try:
+                        return self.llm.stream_chat(
+                            messages, tools=tool_defs, on_text_chunk=_on_text_chunk,
+                            on_reasoning_chunk=_on_reasoning_chunk, timeout=llm_timeout,
+                            idle_timeout_s=llm_timeout, should_cancel=self._cancel_event.is_set,
+                        )
+                    except ProviderStreamError as error:
+                        self._account_llm_usage(
+                            run_dir, getattr(error, "usage_metadata", None), current_iter,
+                            purpose="failed_stream",
+                        )
+                        raise
+
                 try:
-                    response = self.llm.stream_chat(
-                        messages,
-                        tools=tool_defs,
-                        on_text_chunk=_on_text_chunk,
-                        on_reasoning_chunk=_on_reasoning_chunk,
-                        timeout=llm_timeout,
-                        idle_timeout_s=llm_timeout,
-                        should_cancel=self._cancel_event.is_set,
-                    )
+                    response = stream_request()
                 except ProviderStreamError as exc:
                     # One retry for transient mid-stream failures (connection
                     # reset, relay hiccup) — mirrors the swarm worker policy.
@@ -1546,14 +1555,19 @@ class AgentLoop:
                     # provider's Retry-After header (bounded by the configured
                     # cap) when present. A successful retry does not reset the
                     # streak — only a clean first-attempt success does.
-                    if not exc.retryable:
+                    context_overflow = is_context_overflow(str(exc))
+                    if not exc.retryable and not context_overflow:
                         raise
-                    stream_failure_streak += 1
-                    retry_delay_s = (
-                        min(exc.retry_after_s, _stream_retry_max_delay_s())
-                        if exc.retry_after_s is not None
-                        else _stream_retry_backoff_s(stream_failure_streak)
-                    )
+                    if context_overflow:
+                        self._recover_context_overflow(exc, messages, run_dir, trace, iteration, current_iter)
+                        retry_delay_s = 0.0
+                    else:
+                        stream_failure_streak += 1
+                        retry_delay_s = (
+                            min(exc.retry_after_s, _stream_retry_max_delay_s())
+                            if exc.retry_after_s is not None
+                            else _stream_retry_backoff_s(stream_failure_streak)
+                        )
                     logger.warning(
                         "Provider stream failed (iter %s), retrying once in %.2fs: %s",
                         current_iter,
@@ -1564,7 +1578,7 @@ class AgentLoop:
                         "stream_reset",
                         {
                             "iter": current_iter,
-                            "reason": "provider_stream_retry",
+                            "reason": "context_overflow" if context_overflow else "provider_stream_retry",
                             "provider": exc.provider,
                             "model": exc.model,
                             "retry_delay_s": retry_delay_s,
@@ -1579,70 +1593,31 @@ class AgentLoop:
                     # failure. A blocking sleep would make Stop take that long
                     # to be observed; the event returns the moment it is set.
                     self._cancel_event.wait(retry_delay_s)
-                    if self._cancel_event.is_set():
+                    if self._cancel_event.is_set() or self._budget_stop_reason is not None:
                         break
-                    response = self.llm.stream_chat(
-                        messages,
-                        tools=tool_defs,
-                        on_text_chunk=_on_text_chunk,
-                        on_reasoning_chunk=_on_reasoning_chunk,
-                        timeout=llm_timeout,
-                        idle_timeout_s=llm_timeout,
-                        should_cancel=self._cancel_event.is_set,
-                    )
+                    response = stream_request()
                 else:
                     stream_failure_streak = 0
 
-                # Cancelled mid-stream: discard this turn's partial response and
-                # end the run now, without executing any of its tool calls.
-                if self._cancel_event.is_set():
-                    break
-
-                # An LLM response arrived - real progress for the stall watchdog.
-                self._last_activity_wall = _time.time()
-
+                # Count received usage before observing cancellation/budget limits.
                 usage = getattr(response, "usage_metadata", None)
+                self._context_meter.observe(
+                    usage.get("input_tokens") if isinstance(usage, dict) else None,
+                    messages, tool_schema_tokens=self._tool_schema_tokens,
+                )
+                self._pending_tool_observations.difference_update(
+                    message.get("tool_call_id") for message in messages if message.get("role") == "tool"
+                )
+                self._last_activity_wall = _time.time()
                 if getattr(response, "response_model", None):
                     last_response_model = response.response_model
-                usage_delta = _record_llm_usage(
-                    run_dir,
-                    llm_usage_summary,
-                    usage,
-                    current_iter,
-                )
-                if usage_delta:
-                    self._emit(
-                        "llm_usage",
-                        {
-                            **usage_delta,
-                            "iter": current_iter,
-                        },
-                    )
-                if active_goal_id and session_id:
-                    token_delta = int(usage_delta.get("total_tokens") or 0) if usage_delta else 0
-                    turn_delta = 0 if goal_turn_accounted else 1
-                    if token_delta or turn_delta:
-                        try:
-                            if goal_store is None:
-                                from src.goal import GoalStore
-
-                                goal_store = GoalStore()
-                            goal_store.account_usage(
-                                session_id=session_id,
-                                goal_id=active_goal_id,
-                                expected_goal_id=active_goal_id,
-                                token_delta=token_delta,
-                                turn_delta=turn_delta,
-                            )
-                            goal_turn_accounted = True
-                            snapshot = goal_store.get_goal_snapshot(active_goal_id)
-                            if snapshot is not None:
-                                self._emit(
-                                    "goal.updated",
-                                    {"goal": snapshot["goal"], "snapshot": snapshot},
-                                )
-                        except Exception as exc:  # noqa: BLE001
-                            logger.debug("Goal usage accounting skipped: %s", exc)
+                self._account_llm_usage(run_dir, getattr(response, "usage_metadata", None), current_iter)
+                # Do not execute paid tool calls after reaching the budget. A
+                # complete text answer is still checked/grounded and released.
+                if self._cancel_event.is_set() or (
+                    self._budget_stop_reason is not None and response.has_tool_calls
+                ):
+                    break
 
                 thinking_text = "".join(thinking_chunks)
                 if thinking_text:
@@ -2038,6 +2013,10 @@ class AgentLoop:
             final_reason = "cancelled by user"
             state_store.mark_cancelled(run_dir, final_reason)
             final_status = "cancelled"
+        elif self._budget_stop_reason is not None and not final_content:
+            final_reason = self._budget_stop_reason
+            state_store.mark_failure(run_dir, final_reason)
+            final_status = "failed"
         elif no_progress_reason is not None:
             final_reason = no_progress_reason
             state_store.mark_failure(run_dir, final_reason)
@@ -2327,9 +2306,13 @@ class AgentLoop:
                     if cache_ttl == float("inf") or (
                         _time.time() - stored_at
                     ) <= cache_ttl:
-                        cached = self._called_identical[cache_key]
+                        cached = redact_tool_result(self._called_identical[cache_key])
+                        self._called_identical[cache_key] = cached
                 if cached is not None:
-                    messages.append(context.format_tool_result(tc.id, tc.name, cached))
+                    messages.append(context.format_tool_result(
+                        tc.id, tc.name, deliver_tool_result(cached, self.memory.run_dir, self.registry)
+                    ))
+                    self._pending_tool_observations.add(tc.id)
                     self._successful_call_keys[tc.id] = cache_key
                     self._called_ok.add(cache_key)
                     trace.write({
@@ -2853,7 +2836,104 @@ class AgentLoop:
             "file write is a failure."
         )
 
-    def _microcompact_and_unblock(self, messages: list, trace: TraceWriter, iteration: int) -> list[str]:
+    def _legacy_compaction_threshold(self) -> int | None:
+        """Honor an explicitly configured old threshold, not its 40K default."""
+        if _override("TOKEN_THRESHOLD") is not None or get_env_value("TOKEN_THRESHOLD").strip():
+            return max(1, _token_threshold())
+        return None
+
+    def _context_budget(self, messages: list) -> CompactionBudget:
+        cfg = get_env_config().agent_tuning
+        window, source = resolve_window(
+            self._llm_runtime.provider, self._llm_runtime.configured_model,
+            env_window=cfg.vibe_trading_context_window,
+            learned_window=self._learned_context_window,
+        )
+        # An operator override cannot make a provider's observed hard limit
+        # larger. Retain the setting, but bound recovery by the proven limit.
+        if self._learned_context_window is not None and self._learned_context_window < window:
+            window, source = self._learned_context_window, "learned:context_length_error"
+        return CompactionBudget(
+            window=window, source=source,
+            max_tokens=cfg.vibe_trading_context_max_tokens,
+            static_tokens=self._context_meter.static(messages, self._tool_schema_tokens),
+        )
+
+    def _prompt_tokens(self, messages: list) -> int:
+        return self._context_meter.tokens(messages, self._tool_schema_tokens)
+
+    def _compact_to_budget(
+        self, messages: list, run_dir: Path, trace: TraceWriter,
+        iteration: int, current_iter: int, *, force: bool = False,
+    ) -> None:
+        """Clear oldest observations only as needed, then summarize if required."""
+        legacy = self._legacy_compaction_threshold()
+        if legacy is not None and not force:
+            # Explicit settings and existing integrations keep the old units.
+            # New/default configurations use real model windows below.
+            if estimate_tokens(messages) > int(legacy * 0.5):
+                self._microcompact_and_unblock(messages, trace, iteration)
+            if estimate_tokens(messages) > int(legacy * 0.7):
+                _context_collapse(messages)
+            if estimate_tokens(messages) > legacy:
+                self._auto_compact(messages, run_dir, trace, iteration=current_iter)
+            return
+
+        budget = self._context_budget(messages)
+        if budget.static_overflow:
+            raise RuntimeError(
+                "context_budget_exceeded: the system prompt and tool schemas already fill "
+                "the configured context budget; select a larger supported window or increase the context cost cap"
+            )
+        tokens = self._prompt_tokens(messages)
+        if tokens > budget.micro_at:
+            self._microcompact_and_unblock(
+                messages, trace, iteration, target_tokens=budget.micro_at,
+                measure=self._prompt_tokens, preserve_tool_call_ids=self._pending_tool_observations,
+            )
+            tokens = self._prompt_tokens(messages)
+        if tokens > budget.collapse_at:
+            _context_collapse(messages, preserve_tool_call_ids=self._pending_tool_observations)
+            tokens = self._prompt_tokens(messages)
+        regrowth = min(8000, max(512, budget.conversation // 10))
+        regrown = self._compacted_to_tokens is None or tokens > self._compacted_to_tokens + regrowth
+        if force or (tokens > budget.compact_at and regrown):
+            trace.write({
+                "type": "context_budget", "iter": current_iter, "prompt_tokens": tokens,
+                "window": budget.window, "source": budget.source, "static_tokens": budget.static_tokens,
+                "compact_at": budget.compact_at,
+            })
+            self._auto_compact(
+                messages, run_dir, trace, iteration=current_iter,
+                tail_token_budget=min(TAIL_TOKEN_BUDGET, max(1, budget.conversation // 2)),
+            )
+            self._compacted_to_tokens = self._prompt_tokens(messages)
+        if not self._cancel_event.is_set() and self._budget_stop_reason is None and self._prompt_tokens(messages) > budget.total:
+            raise RuntimeError(
+                "context_budget_exceeded: the conversation remains larger than the configured "
+                "budget after compression; shorten the request or increase the supported context budget"
+            )
+
+    def _recover_context_overflow(
+        self, exc: Exception, messages: list, run_dir: Path, trace: TraceWriter,
+        iteration: int, current_iter: int,
+    ) -> None:
+        """Learn a provider's actual limit and make one bounded recovery attempt."""
+        sent = self._prompt_tokens(messages)
+        stated = parse_context_limit(str(exc))
+        learned = stated or max(1000, int(sent * 0.9))
+        self._learned_context_window = min(self._learned_context_window or learned, learned)
+        trace.write({
+            "type": "context_overflow", "iter": current_iter, "prompt_tokens": sent,
+            "stated_limit": stated, "learned_window": self._learned_context_window,
+        })
+        self._compact_to_budget(messages, run_dir, trace, iteration, current_iter, force=True)
+
+    def _microcompact_and_unblock(
+        self, messages: list, trace: TraceWriter, iteration: int, *,
+        target_tokens: int | None = None, measure: Callable[[list], int] | None = None,
+        preserve_tool_call_ids: set[str] | None = None,
+    ) -> list[str]:
         """Run layer-1 microcompact and re-open lost readonly call identities.
 
         A readable result for another argument variant, or a synthetic skip,
@@ -2872,7 +2952,8 @@ class AgentLoop:
             The tool names re-opened, for callers and tests to assert on.
         """
         readable_before = self._readable_success_keys(messages)
-        _microcompact(messages)
+        _microcompact(messages, target_tokens=target_tokens, measure=measure,
+                      preserve_tool_call_ids=preserve_tool_call_ids)
         unreadable_tools = self._unblock_lost_readonly_results(messages, readable_before)
         if unreadable_tools:
             trace.write({
@@ -2975,6 +3056,8 @@ class AgentLoop:
         # A tool completed - real progress for the stall watchdog.
         self._last_activity_wall = _time.time()
 
+        # The model, grounding ledger and replay cache share the safe value.
+        result = redact_tool_result(result)
         success = _is_tool_success(result)
         if update_memory:
             self._tool_progress.record(
@@ -3031,8 +3114,9 @@ class AgentLoop:
                     self._identical_cached_at[cache_key] = _time.time()
 
         status = "ok" if success else "error"
-        truncated = truncate_tool_result(result)
+        truncated = deliver_tool_result(result, self.memory.run_dir, self.registry)
         messages.append(context.format_tool_result(tc.id, tc.name, truncated))
+        self._pending_tool_observations.add(tc.id)
 
         # One redaction feeds every subscriber below: the persisted trace
         # record, the react trace, and the SSE preview.
@@ -3058,6 +3142,26 @@ class AgentLoop:
             },
         )
 
+    def _account_llm_usage(
+        self, run_dir: Path, usage: Any, iteration: int, *, purpose: str | None = None,
+    ) -> None:
+        """Persist received usage before another model call or tool execution."""
+        delta = _record_llm_usage(run_dir, self._llm_usage_summary, usage, iteration, purpose=purpose)
+        if self._goal_usage_callback is not None:
+            self._goal_usage_callback(delta)
+        metadata = {"iter": iteration}
+        if purpose is not None:
+            metadata["purpose"] = purpose
+        if delta:
+            self._emit("llm_usage", {**delta, **metadata, "call_index": self._llm_usage_summary["totals"]["calls"]})
+        elif purpose is None and not self._cancel_event.is_set():
+            self._emit("llm_usage_unavailable", metadata)
+        else:
+            # A failed/cancelled or auxiliary call without usage is not a
+            # missing bill for a successful live decision. Record uncertainty
+            # without emitting the event a spending monitor treats as a halt.
+            _record_unreported_llm_call(run_dir, self._llm_usage_summary)
+
     # -- Context compression ---------------------------------------------------
 
     def _auto_compact(
@@ -3067,6 +3171,7 @@ class AgentLoop:
         trace: TraceWriter,
         focus_topic: str = "",
         iteration: int = 0,
+        tail_token_budget: int | None = None,
     ) -> None:
         """Layer 3/4/5: structured LLM summary with token-budget tail protection.
 
@@ -3084,7 +3189,8 @@ class AgentLoop:
             focus_topic: Optional topic to prioritize in the summary.
             iteration: Current trace iteration.
         """
-        del run_dir
+        if self._cancel_event.is_set() or self._budget_stop_reason is not None:
+            return
         # Save full transcript before compressing next to the active trace.
         transcript_path = trace.dir_path / f"transcript_{int(_time.time())}.jsonl"
         with open(transcript_path, "w", encoding="utf-8") as f:
@@ -3097,7 +3203,10 @@ class AgentLoop:
 
         # Token-budget tail: size messages with their tool-call arguments so
         # oversized tool calls are folded instead of hiding in the tail.
-        cut_idx = _tail_cut_index(body)
+        cut_idx = _tail_cut_index(
+            body, budget=tail_token_budget if tail_token_budget is not None else TAIL_TOKEN_BUDGET,
+            estimator=estimate_context_tokens if tail_token_budget is not None else None,
+        )
 
         head = body[:cut_idx]
         tail = body[cut_idx:]
@@ -3118,12 +3227,21 @@ class AgentLoop:
         # Fold every head chunk so no message falls between the summary prompt
         # and the preserved tail. The first fresh chunk gets the full
         # structured handoff; subsequent chunks incrementally update it.
-        chunks = _summary_chunks(head)
+        if tail_token_budget is not None:
+            # The summarizer has the same provider window. A conservative
+            # character cap also leaves room for the summary template and the
+            # running handoff when the conversation uses CJK text.
+            summary_limit = min(SUMMARY_CHUNK_CHARS, max(256, int(self._context_budget(messages).total * 0.5)))
+            chunks = _summary_chunks(head, limit=summary_limit)
+        else:
+            chunks = _summary_chunks(head)
         logger.info("Auto compact: folding %d summary chunks", len(chunks))
         summary = self._previous_summary or ""
         degraded_compact = False
         _compact_timeout = _llm_timeout_seconds()
         for conv_text in chunks:
+            if self._cancel_event.is_set() or self._budget_stop_reason is not None:
+                return
             # Structured template while there is still nothing to update — that
             # covers a fresh session's first chunk and the corner case where
             # every fold so far returned empty content.
@@ -3169,6 +3287,7 @@ class AgentLoop:
                         "Auto compact summary call exceeded %.1fs; degrading compaction",
                         _compact_timeout,
                     )
+                    self._account_llm_usage(run_dir, None, iteration, purpose="compaction")
                     degraded_compact = True
                     break
                 if _compact_error:
@@ -3176,11 +3295,19 @@ class AgentLoop:
                         "Auto compact LLM call failed (%s); degrading compaction",
                         _compact_error[0],
                     )
+                    self._account_llm_usage(run_dir, getattr(_compact_error[0], "usage_metadata", None), iteration, purpose="compaction")
                     degraded_compact = True
                     break
                 summary_resp = _compact_result[0]
             else:
-                summary_resp = self.llm.chat([{"role": "user", "content": prompt}])
+                try:
+                    summary_resp = self.llm.chat([{"role": "user", "content": prompt}])
+                except Exception as exc:
+                    self._account_llm_usage(run_dir, getattr(exc, "usage_metadata", None), iteration, purpose="compaction")
+                    raise
+            self._account_llm_usage(run_dir, getattr(summary_resp, "usage_metadata", None), iteration, purpose="compaction")
+            if self._cancel_event.is_set() or self._budget_stop_reason is not None:
+                return
             if summary_resp.content:
                 summary = summary_resp.content
         if degraded_compact and not summary:
@@ -3198,6 +3325,7 @@ class AgentLoop:
         # INTC run: identical calcs re-ran 5-9x each). Re-attach a terse
         # ledger of already-verified values so the model does not re-run them.
         verification_ledger = _verification_ledger(head)
+        artifact_index = self._result_artifact_index(head, run_dir)
 
         tokens_before = estimate_tokens(messages)
         trace.write_text_entry(
@@ -3223,6 +3351,12 @@ class AgentLoop:
                 "re-run these tools, they are already verified]:\n"
                 + verification_ledger
             )
+        if artifact_index:
+            compressed += (
+                "\n\n[Saved tool observations: these files retain the complete redacted results. "
+                "Read their parts instead of refetching the source. This index is not new evidence.]:\n"
+                + artifact_index
+            )
         if state_summary and state_summary != "(empty state)":
             compressed += f"\n\nCurrent agent state:\n{state_summary}"
 
@@ -3234,6 +3368,62 @@ class AgentLoop:
         # Fix orphaned tool pairs in the reconstructed message list
         _fix_tool_pairs(messages)
         self._unblock_lost_readonly_results(messages, readable_before)
+
+    def _result_artifact_index(self, messages: list, run_dir: Path) -> str:
+        """Retain bounded whole locators even if the LLM summary omits them."""
+        import hashlib
+
+        try:
+            workspace = safe_run_dir(str(run_dir)).resolve()
+            root = workspace / "tool-results"
+            if root.is_symlink() or not root.resolve().is_relative_to(workspace):
+                return ""
+        except (ValueError, OSError):
+            return ""
+        lines: list[str] = []
+        for message in messages:
+            if message.get("role") != "tool":
+                continue
+            try:
+                payload = json.loads(message.get("content") or "")
+                info = payload.get("_result_file") if isinstance(payload, dict) else None
+                if isinstance(info, dict) and isinstance(info.get("path"), str):
+                    self._saved_result_locators.pop(info["path"], None)
+                    self._saved_result_locators[info["path"]] = dict(info)
+            except (ValueError, TypeError):
+                continue
+        while len(self._saved_result_locators) > 32:
+            self._saved_result_locators.pop(next(iter(self._saved_result_locators)))
+        for key, info in reversed(list(self._saved_result_locators.items())):
+            try:
+                original = Path(info["path"])
+                original_parts = Path(info["parts_dir"])
+                path, parts = original.resolve(), original_parts.resolve()
+                digest = info["sha256"]
+                count = info["part_count"]
+                if (not path.is_relative_to(root) or not parts.is_relative_to(root)
+                        or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                        or path.parent.name != digest or parts.parent != path.parent
+                        or not isinstance(count, int) or isinstance(count, bool) or count <= 0
+                        or not path.is_file()
+                        or any(p.is_symlink() or getattr(p, "is_junction", lambda: False)()
+                               for p in (original, original_parts, *original.parents, *original_parts.parents)
+                               if p.is_relative_to(workspace))):
+                    raise ValueError("Invalid saved result locator")
+                actual = hashlib.sha256()
+                with path.open("rb") as handle:
+                    for block in iter(lambda: handle.read(65536), b""):
+                        actual.update(block)
+                if actual.hexdigest() != digest:
+                    raise ValueError("Saved result changed after delivery")
+            except (ValueError, TypeError, KeyError, OSError):
+                self._saved_result_locators.pop(key, None)
+                continue
+            line = f"- {path}; sha256={digest}; parts={parts}/1.txt through {count}.txt"
+            if sum(len(item) + 1 for item in lines) + len(line) > 4000:
+                continue
+            lines.append(line)
+        return "\n".join(reversed(lines))
 
     def _emit(self, event_type: str, data: Dict[str, Any]) -> None:
         """Fire an event via the callback."""

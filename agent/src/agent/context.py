@@ -343,25 +343,29 @@ class ContextBuilder:
         messages.append({"role": "user", "content": enriched})
         return messages
 
-    # Prose tool section is deliberately compact: the full tool schema (name,
-    # description, parameter JSON schema) is sent to the model via the API
-    # ``tools`` array (``ToolRegistry.get_definitions()`` -> ``bind_tools``), so
-    # repeating every description + parameter here as prose roughly doubled the
-    # per-call input tokens for zero model benefit. Keep one short discovery
-    # hint per tool; the authoritative spec arrives with every request. This is
-    # a pure token-cost change: no tool is removed, and the grounding/identity
-    # gate (which validates tool results, not the prompt) is untouched.
+    # Keep discovery prose compact. In lazy mode all names remain visible,
+    # while exact argument schemas are selected with load_tools. Eager mode
+    # retains the original full schemas on every request.
     _TOOL_PROSE_DESC_MAX = 80
 
     def _format_tool_descriptions(self) -> str:
         """Format a compact one-line tool list for the system prompt.
 
         Returns one line per registered tool: ``- <name>: <short hint>``. The
-        full parameter schema is deliberately NOT repeated here — it is supplied
-        through the API ``tools`` parameter on every call (see
-        ``ToolRegistry.get_definitions``), so the model always has the exact
-        spec even though the prose stays small.
+        full parameter schema is deliberately NOT repeated here. Large lazy
+        registries explain how to load it; eager registries supply it directly.
         """
+        from src.agent.tool_loading import DeferredToolRegistry
+
+        if isinstance(self.registry, DeferredToolRegistry):
+            return (
+                "The complete available-tool catalog follows. Only loaded tools have full argument "
+                "schemas in this request. Use load_tools(names=[...]) to load the exact names you "
+                "need, preferably together, then request them through the host's tool-call protocol "
+                "in the next turn. Loading does not execute a tool or grant new permissions. "
+                "No catalog entry is hidden by search or ranking.\n\n"
+                + self.registry.catalog()
+            )
         lines = []
         for tool in self.registry._tools.values():
             desc = (tool.description or "").strip().replace("\n", " ")

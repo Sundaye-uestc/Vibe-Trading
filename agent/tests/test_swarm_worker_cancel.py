@@ -19,6 +19,8 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from src.providers.chat import LLMResponse, ToolCallRequest
 from src.swarm.models import SwarmAgentSpec, SwarmTask, WorkerResult
 import src.swarm.worker as worker_mod
@@ -195,3 +197,22 @@ def test_no_cancel_event_leaves_stream_chat_signature_untouched(tmp_path):
     _run(tmp_path, llm, registry, cancel_event=None)
 
     assert llm.should_cancel_seen and all(p is None for p in llm.should_cancel_seen)
+
+
+@pytest.mark.parametrize(("usage", "expected"), [
+    ({"input_tokens": 110, "output_tokens": 11}, (110, 11)),
+    ({"input_tokens": 110}, (110, 0)),
+    ({"input_tokens": 0, "output_tokens": 0}, (0, 0)),
+    (None, (0, 0)),
+])
+def test_cancelled_stream_counts_only_reported_usage_without_dispatch(tmp_path, usage, expected):
+    cancel_event = threading.Event()
+    response = _tool_call_response()
+    response.usage_metadata = usage
+    llm = _ScriptedLLM(response, cancel_event=cancel_event, set_on_stream=True)
+    registry = _Registry()
+    result, events = _run(tmp_path, llm, registry, cancel_event)
+    assert result.status == "cancelled"
+    assert (result.input_tokens, result.output_tokens) == expected
+    assert registry.executed == []
+    assert "tool_call" not in events

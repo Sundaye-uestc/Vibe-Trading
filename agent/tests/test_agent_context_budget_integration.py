@@ -7,12 +7,14 @@ from pathlib import Path
 
 import pytest
 
+import src.agent.loop as loop_mod
 from src.agent.context import ContextBuilder
 from src.agent.loop import AgentLoop, _context_collapse, _microcompact
 from src.agent.memory import WorkspaceMemory
 from src.agent.result_artifacts import deliver_tool_result
 from src.agent.tools import BaseTool, ToolRegistry
 from src.agent.trace import TraceWriter
+from src.config.accessor import reset_env_config
 from src.config.paths import get_runs_dir
 from src.providers.chat import LLMResponse, LLMRuntimeSnapshot, ProviderStreamError, ToolCallRequest
 from src.tools.read_file_tool import ReadFileTool
@@ -57,13 +59,18 @@ class Model:
 @pytest.fixture
 def create_agent(monkeypatch, tmp_path):
     monkeypatch.delenv("TOKEN_THRESHOLD", raising=False)
-    monkeypatch.setattr("src.agent.loop.STALL_TIMEOUT_SECONDS", 0)
+    # These legacy attributes are virtual module __getattr__ values. setattr
+    # reads them first, warming EnvConfig before a test sets its window, then
+    # leaves a concrete attribute behind on undo and masks the bug by order.
+    monkeypatch.delitem(vars(loop_mod), "TOKEN_THRESHOLD", raising=False)
+    monkeypatch.setitem(vars(loop_mod), "STALL_TIMEOUT_SECONDS", 0)
     monkeypatch.setattr(ContextBuilder, "build_messages", lambda self, text, history=None:
                         [{"role": "system", "content": "Brief assistant."}, *(history or []), {"role": "user", "content": text}])
     root = get_runs_dir() / tmp_path.name
     root.mkdir(parents=True)
 
     def make(model, registry=None, max_iterations=4):
+        reset_env_config()
         return AgentLoop(registry if registry is not None else ToolRegistry(), model,
                          memory=WorkspaceMemory(run_dir=str(root)), max_iterations=max_iterations)
     return make

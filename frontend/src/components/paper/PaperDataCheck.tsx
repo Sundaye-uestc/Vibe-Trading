@@ -44,7 +44,7 @@ export function PaperDataCheck({ market, disabled }: { market: string; disabled:
       <summary className="cursor-pointer font-medium">{t("paper.preflightTitle")}</summary>
       <form onSubmit={check} className="mt-4 space-y-4">
         <p className="text-sm text-muted-foreground">{t("paper.preflightHint")}</p>
-        <fieldset disabled={disabled || busy} className="grid min-w-0 gap-3 sm:grid-cols-3">
+        <fieldset disabled={disabled || busy} className="grid min-w-0 gap-3 lg:grid-cols-3">
           <label className="text-sm">{t("paper.preflightSymbols")}
             <input className={field} value={symbols} maxLength={200}
               placeholder={market === "cn_a" ? "600522.SH" : market === "hk" ? "00700.HK" : "AAPL.US"}
@@ -58,7 +58,7 @@ export function PaperDataCheck({ market, disabled }: { market: string; disabled:
             <input className={field} type="date" required value={to} min={from || undefined}
               onChange={(event) => change(setTo, event.target.value)} />
           </label>
-          <button className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50 sm:col-span-3" type="submit">
+          <button className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50 lg:col-span-3" type="submit">
             {t(busy ? "paper.preflightWorking" : "paper.preflightRun")}
           </button>
         </fieldset>

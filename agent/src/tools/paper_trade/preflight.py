@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from . import calendar, data
+from .coverage import PaperDataUnavailable, daily_status, verify_event_rows
 
 MAX_DAYS = 31
 MAX_SYMBOLS = 10
@@ -119,6 +120,12 @@ def _event_checks(request: dict, connector: Any, trading: list[str] | None) -> l
         return [_check(key, "blocked", f"Cannot read {table} without a connected ClickHouse source.") for key, table, _ in _EVENT_TABLES]
     if not request["symbols"]:
         return [_check(key, "not_checked", "Enter symbols to check the event and price-limit tables.") for key, _, _ in _EVENT_TABLES]
+    try:
+        observations = daily_status(connector, request["symbols"], request["from_date"], request["to_date"], trading)
+        observation_error = None
+    except PaperDataUnavailable:
+        observations = None
+        observation_error = "Managed daily status coverage is missing, inconsistent or unreadable. Import the requested symbols and dates."
     params = {"param_start": request["from_date"], "param_end": request["to_date"]}
     clauses = []
     for i, symbol in enumerate(request["symbols"]):
@@ -126,6 +133,9 @@ def _event_checks(request: dict, connector: Any, trading: list[str] | None) -> l
         clauses.append(f"ts_code = {{symbol{i}:String}}")
     results = []
     for key, table, columns in _EVENT_TABLES:
+        if key in {"st_status", "suspensions"} and observation_error:
+            results.append(_check(key, "blocked", observation_error))
+            continue
         sql = (f"SELECT ts_code, trade_date, {columns} FROM {table} "
                "WHERE trade_date >= {start:String} AND trade_date <= {end:String} AND ("
                + " OR ".join(clauses) + ") LIMIT 10001")
@@ -154,7 +164,14 @@ def _event_checks(request: dict, connector: Any, trading: list[str] | None) -> l
                 elif key == "limit_events" and str(record["limit"]).strip() not in {"U", "D", "Z"}:
                     raise ValueError("Invalid lock-side flag")
                 observed.add((symbol, day))
-            if key == "limits" and trading is not None:
+            if key in {"st_status", "suspensions"} and observations is not None:
+                verify_event_rows(observations, frame.to_dict("records"), key)
+                if trading is None:
+                    results.append(_check(key, "warning", "Daily provider observations are available, but the calendar is incomplete."))
+                else:
+                    sources = ", ".join(sorted({row["source"] for row in observations.values()}))
+                    results.append(_check(key, "ready", f"Explicit daily provider observations cover the requested dates, including normal/no-event states. Source: {sources}."))
+            elif key == "limits" and trading is not None:
                 missing = [day for day in trading if any((symbol, day) not in observed for symbol in request["symbols"])]
                 if not missing:
                     results.append(_check(key, "ready", "Observed daily price bands cover the requested symbols and open dates."))

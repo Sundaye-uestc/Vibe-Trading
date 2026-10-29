@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""Manage an opt-in, loopback-only ClickHouse server for local paper data.
+
+Uses the official macOS Apple Silicon release with a pinned SHA-256. No system
+installation, startup agent, database import, or application .env edit occurs.
+State and credentials stay in the ignored .vibe-dev/clickhouse directory.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import platform
+import secrets
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import ProxyHandler, Request, build_opener
+from xml.sax.saxutils import escape
+
+VERSION = "26.10.2.103"
+URL = f"https://github.com/ClickHouse/ClickHouse/releases/download/v{VERSION}-stable/clickhouse-macos-aarch64"
+SHA256 = "7f43a3c4d5f41e42ae6ec275c1531ca44b6018caae15217394fd85181ca1df59"
+# The checksum-verified official binary self-unpacks on its first invocation.
+# Keep that deterministic expanded image pinned too; no unverified replacement
+# is accepted just because it prints the expected version string.
+EXPANDED_SHA256 = "96399ddf8dd9edcfaf2807b901fcda4453059ccc8852546b4e2c49144688a63d"
+SIZE = 190539601
+ROOT = Path(__file__).resolve().parent.parent / ".vibe-dev" / "clickhouse"
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Create private files without a permissive intermediate mode."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(text)
+
+
+def _digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def install(root: Path) -> Path:
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        raise RuntimeError("This pinned local installer supports macOS arm64 only")
+    binary = root / "bin" / "clickhouse"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    if binary.exists():
+        if binary.is_symlink() or _digest(binary) not in {SHA256, EXPANDED_SHA256}:
+            raise RuntimeError("Existing binary differs from the pinned official release; no overwrite performed")
+        return binary
+    temporary = binary.with_suffix(".download")
+    # curl uses the operator's usual proxy environment, if any. Never alter TLS
+    # verification or system quarantine/security settings to make an install work.
+    subprocess.run(["curl", "--fail", "--location", "--connect-timeout", "15",
+                    "--max-time", "900", "--output", str(temporary), URL], check=True)
+    if temporary.stat().st_size != SIZE or _digest(temporary) != SHA256:
+        raise RuntimeError("Downloaded binary does not match the official release digest")
+    temporary.chmod(0o755)
+    temporary.replace(binary)
+    source = root / "binary-source.json"
+    if source.exists():
+        raise RuntimeError("Binary source metadata already exists; refusing to overwrite it")
+    _write_private(source, json.dumps({
+        "version": VERSION, "url": URL, "sha256": SHA256, "size": SIZE,
+        "expanded_sha256": EXPANDED_SHA256,
+    }, indent=2) + "\n")
+    return binary
+
+
+def configure(root: Path, http_port: int, tcp_port: int) -> dict:
+    """Create one private instance. Refuse partial or foreign configuration."""
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    files = [root / name for name in ("credentials.json", "config.xml", "users.xml")]
+    if any(path.exists() for path in files):
+        if not all(path.is_file() and not path.is_symlink() for path in files):
+            raise RuntimeError("Existing ClickHouse configuration is partial or linked; refusing to replace it")
+        config = json.loads(files[0].read_text())
+        if config.get("managed_by") != "vibe-clickhouse-local-v1":
+            raise RuntimeError("Existing ClickHouse configuration is not managed by this script")
+        if (http_port, tcp_port) != (config["http_port"], config["tcp_port"]):
+            raise RuntimeError("Ports differ from the saved instance; keep the original ports")
+        return config
+    for name in ("data", "access", "logs", "tmp", "user_files"):
+        path = root / name
+        if path.exists() and (not path.is_dir() or path.is_symlink() or any(path.iterdir())):
+            raise RuntimeError("Unmanaged instance data already exists; refusing to adopt or replace it")
+    root.chmod(0o700)
+    for name in ("data", "tmp", "user_files", "access", "logs"):
+        (root / name).mkdir(mode=0o700, exist_ok=True)
+    config = {
+        "managed_by": "vibe-clickhouse-local-v1", "host": "http://127.0.0.1",
+        "http_port": http_port, "tcp_port": tcp_port, "database": "vibe_paper",
+        "admin": {"user": "vibe_admin", "password": secrets.token_urlsafe(32)},
+        "reader": {"user": "paper_reader", "password": secrets.token_urlsafe(32)},
+    }
+    def path(name):
+        return escape(str(root / name))
+    users = "<clickhouse><profiles><default><max_threads>2</max_threads><max_memory_usage>1073741824</max_memory_usage></default>"
+    users += ("<paper_readonly><readonly>1</readonly><max_threads>2</max_threads>"
+              "<max_memory_usage>536870912</max_memory_usage><max_execution_time>10</max_execution_time>"
+              "<constraints><readonly><min>1</min><max>1</max></readonly>"
+              "<max_execution_time><min>1</min><max>120</max><changeable_in_readonly/></max_execution_time>"
+              "<max_threads><readonly/></max_threads><max_memory_usage><readonly/></max_memory_usage>"
+              "</constraints></paper_readonly></profiles><users>")
+    for kind in ("admin", "reader"):
+        account = config[kind]
+        hashed = hashlib.sha256(account["password"].encode()).hexdigest()
+        profile = "default" if kind == "admin" else "paper_readonly"
+        grant = "GRANT ALL ON *.*" if kind == "admin" else "GRANT SELECT ON vibe_paper.*"
+        users += (f'<{account["user"]}><password_sha256_hex>{hashed}</password_sha256_hex>'
+                  f'<networks><ip>127.0.0.1</ip></networks><profile>{profile}</profile>'
+                  f'<quota>default</quota><grants><query>{grant}</query></grants></{account["user"]}>')
+    users += "</users><quotas><default/></quotas></clickhouse>\n"
+    xml = f"""<clickhouse>
+  <logger><level>warning</level><log>{path('logs/server.log')}</log><errorlog>{path('logs/error.log')}</errorlog><size>10M</size><count>3</count></logger>
+  <listen_host>127.0.0.1</listen_host><http_port>{http_port}</http_port><tcp_port>{tcp_port}</tcp_port>
+  <path>{path('data')}/</path><tmp_path>{path('tmp')}/</tmp_path><user_files_path>{path('user_files')}/</user_files_path>
+  <access_control_path>{path('access')}/</access_control_path>
+  <access_control_improvements><settings_constraints_replace_previous>true</settings_constraints_replace_previous></access_control_improvements>
+  <users_config>{path('users.xml')}</users_config><default_profile>default</default_profile><default_database>default</default_database>
+  <max_connections>64</max_connections><max_concurrent_queries>8</max_concurrent_queries>
+  <max_server_memory_usage>2147483648</max_server_memory_usage><mark_cache_size>67108864</mark_cache_size><uncompressed_cache_size>0</uncompressed_cache_size>
+  <max_thread_pool_size>256</max_thread_pool_size><max_thread_pool_free_size>32</max_thread_pool_free_size><thread_pool_queue_size>256</thread_pool_queue_size>
+  <background_pool_size>16</background_pool_size><background_schedule_pool_size>4</background_schedule_pool_size>
+  <background_buffer_flush_schedule_pool_size>2</background_buffer_flush_schedule_pool_size><background_message_broker_schedule_pool_size>2</background_message_broker_schedule_pool_size><background_distributed_schedule_pool_size>2</background_distributed_schedule_pool_size>
+</clickhouse>\n"""
+    _write_private(files[0], json.dumps(config, indent=2) + "\n")
+    _write_private(files[2], users)
+    _write_private(files[1], xml)
+    return config
+
+
+def request(config: dict, query: str, *, account="admin") -> tuple[int, str]:
+    user = config[account]
+    token = base64.b64encode(f'{user["user"]}:{user["password"]}'.encode()).decode()
+    req = Request(f'{config["host"]}:{config["http_port"]}/', data=query.encode(),
+                  headers={"Authorization": f"Basic {token}"})
+    try:
+        with build_opener(ProxyHandler({})).open(req, timeout=3) as response:
+            return response.status, response.read().decode()
+    except HTTPError as exc:
+        return exc.code, "HTTP error"  # never expose arbitrary server payloads
+
+
+def managed_pid(root: Path) -> int | None:
+    """Check PID reuse before signalling a process owned by this instance."""
+    file = root / "server.pid"
+    if not file.exists():
+        return None
+    pid = int(file.read_text().strip())
+    if pid <= 1:
+        raise RuntimeError("Invalid managed ClickHouse PID")
+    process = subprocess.run(["ps", "-p", str(pid), "-o", "state=", "-o", "command="], capture_output=True, text=True)
+    if process.returncode:
+        return None
+    state, _, command = process.stdout.strip().partition(" ")
+    if state.startswith("Z"):
+        return None
+    command = command.strip()
+    if str(root / "bin" / "clickhouse") not in command or f"--config-file={root / 'config.xml'}" not in command:
+        raise RuntimeError("Saved PID belongs to another process; refusing to signal it")
+    return pid
+
+
+def _free_ports(config: dict) -> None:
+    for port in (config["http_port"], config["tcp_port"]):
+        with socket.socket() as sock:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("127.0.0.1", port))
+            except OSError:
+                raise RuntimeError(f"Port {port} is already occupied; no process was stopped") from None
+
+
+def start(root: Path, http_port: int, tcp_port: int) -> dict:
+    config = configure(root, http_port, tcp_port)
+    existing = managed_pid(root)
+    if existing:
+        code, _ = request(config, "SELECT 1")
+        if code != 200:
+            raise RuntimeError("Managed server is running but its authenticated health check failed")
+        return {"status": "running", "pid": existing}
+    _free_ports(config)
+    binary = install(root)
+    with (root / "logs" / "console.log").open("ab") as log:
+        process = subprocess.Popen([str(binary), "server", f"--config-file={root / 'config.xml'}"],
+                                   cwd=root, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                                   start_new_session=True,
+                                   env={**os.environ, "CLICKHOUSE_WATCHDOG_ENABLE": "0"})
+    (root / "server.pid").write_text(str(process.pid))
+    for _ in range(60):
+        if process.poll() is not None:
+            raise RuntimeError(f"ClickHouse exited during startup; inspect {root / 'logs'}")
+        try:
+            if request(config, "SELECT 1")[0] == 200:
+                return {"status": "running", "pid": process.pid}
+        except (OSError, URLError):
+            pass
+        time.sleep(0.5)
+    raise RuntimeError("ClickHouse startup timed out; managed process retained for diagnosis")
+
+
+def stop(root: Path) -> dict:
+    pid = managed_pid(root)
+    if pid is None:
+        return {"status": "stopped"}
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(60):
+        if managed_pid(root) is None:
+            (root / "server.pid").unlink(missing_ok=True)
+            return {"status": "stopped"}
+        time.sleep(0.5)
+    raise RuntimeError("Server is still shutting down; no forced kill or data removal performed")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("install", "start", "status", "stop"))
+    parser.add_argument("--state-dir", type=Path, default=ROOT)
+    parser.add_argument("--http-port", type=int, default=8123)
+    parser.add_argument("--tcp-port", type=int, default=9000)
+    args = parser.parse_args()
+    root = args.state_dir.expanduser().resolve()
+    if any(not 1024 <= value <= 65535 for value in (args.http_port, args.tcp_port)) or args.http_port == args.tcp_port:
+        parser.error("Use two different unprivileged ports (1024–65535)")
+    try:
+        if args.action == "install":
+            binary = install(root)
+            result = {"binary": str(binary), "version": VERSION, "sha256": SHA256}
+        elif args.action == "start":
+            result = start(root, args.http_port, args.tcp_port)
+        elif args.action == "stop":
+            result = stop(root)
+        else:
+            pid = managed_pid(root)
+            result = {"status": "running" if pid else "stopped", "pid": pid}
+            if pid:
+                config = json.loads((root / "credentials.json").read_text())
+                code, version = request(config, "SELECT version()")
+                result.update(healthy=code == 200, version=version.strip() if code == 200 else None)
+        print(json.dumps({**result, "state_dir": str(root)}, ensure_ascii=False))
+        return 0
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, URLError) as exc:
+        print(f"ClickHouse local: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

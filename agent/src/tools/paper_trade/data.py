@@ -205,6 +205,26 @@ class ClickHouseBarsClient:
         params = {"param_ts_code": ts_code, "param_start_date": start_date, "param_end_date": end_date}
         return self._connector.query(sql, params=params)
 
+    def covers_raw_range(self, symbol: str, start: str, end: str, frame: pd.DataFrame) -> bool:
+        from .calendar import _cn_a_open_map
+        from .coverage import PaperDataUnavailable, daily_status, raw_coverage
+
+        if not raw_coverage(self._connector, symbol, start, end):
+            return False
+        try:
+            calendar = _cn_a_open_map(self._connector, start, end)
+            days = [stamp.strftime("%Y-%m-%d") for stamp in pd.date_range(start, end)]
+            if any(day not in calendar for day in days):
+                raise ValueError("Incomplete snapshot calendar")
+            open_days = [day for day in days if calendar[day]]
+            statuses = daily_status(self._connector, [symbol], start, end, open_days)
+            observed = {stamp.strftime("%Y-%m-%d") for stamp in frame.index}
+            if statuses is None or any(day not in observed and not statuses[symbol, day]["is_suspended"] for day in open_days):
+                raise ValueError("Missing raw price row in declared complete coverage")
+            return True
+        except Exception as exc:
+            raise PaperDataUnavailable("Managed raw-price snapshot is incomplete; re-import before settlement") from exc
+
 
 def default_ch_client() -> CnABarsClient | None:
     """CH bar client from the existing ``CLICKHOUSE_*`` env config, or None
@@ -429,15 +449,22 @@ def _fetch_cn_a(
             if not frame.empty:
                 ch_frames[symbol] = frame
 
+    # Only a managed import with explicit coverage of the whole requested
+    # lookback can skip the network. An ordinary external CH table retains the
+    # historical federation behavior, and missing CH frames still need a leg.
+    covered = getattr(client, "covers_raw_range", None)
+    network_symbols = tuple(symbol for symbol in symbols
+                            if not (callable(covered) and symbol in ch_frames
+                                    and covered(symbol, window_start, to_date, ch_frames[symbol])))
     net_loader = (
         loader
         if loader is not _AUTO
         else _resolve_network_loader(
             MARKET_LOADER_KEYS[_CN_A_MARKET], exclude=frozenset({_CLICKHOUSE_LOADER_NAME})
         )
-    )
+    ) if network_symbols else None
     net_frames = (
-        _fetch_leg(net_loader, symbols, window_start, to_date, warnings,
+        _fetch_leg(net_loader, network_symbols, window_start, to_date, warnings,
                    production_market=MARKET_LOADER_KEYS[_CN_A_MARKET] if loader is _AUTO else None)
         if net_loader is not None
         else {}

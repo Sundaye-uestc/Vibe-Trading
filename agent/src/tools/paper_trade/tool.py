@@ -34,7 +34,8 @@ from typing import Any
 from src.agent.tools import BaseTool
 
 from . import data, engine, wire
-from .calendar import CN_A_MARKET, CalendarUnavailableError, snapshot_calendar
+from .calendar import CN_A_MARKET, CalendarUnavailableError, snapshot_calendar, trading_days_in_range
+from .coverage import PaperDataUnavailable
 from .data import ClickHouseBarsClient
 from .limits_cn_a import ClickHouseLimitsClient
 from .schema import (
@@ -245,9 +246,18 @@ def run_paper_trade_step(
         if declared:
             symbols = tuple(sorted(set(symbols) | set(declared)))
     try:
+        validate_coverage = getattr(lim, "validate_coverage", None)
+        if request.market == CN_A_MARKET and callable(validate_coverage):
+            validate_coverage(symbols, request.from_date, request.to_date,
+                              trading_days_in_range(cal, CN_A_MARKET, request.from_date, request.to_date))
         market_data = data.fetch_market_data(
             request.market, symbols, request.from_date, request.to_date,
             loader=loader, ch_client=ch,
+        )
+    except PaperDataUnavailable as exc:
+        return _error_document(
+            "PAPER_DATA_NOT_READY", request.account_id, request.market,
+            request.from_date, request.to_date, str(exc), raw_payload,
         )
     except ValueError as exc:
         # Data-layer input guards (from_date > to_date, unknown market, a
@@ -260,35 +270,41 @@ def run_paper_trade_step(
     # 4. Mode dispatch.  strategy_exec is T7 and imported lazily so this module
     #    stays importable (and the agent registry stays buildable) while T7 is
     #    in flight; both modes yield a MatchOutcome handled identically below.
-    if has_strategy:
-        from .strategy_exec import run_strategy_path
+    try:
+        if has_strategy:
+            from .strategy_exec import run_strategy_path
 
-        outcome = run_strategy_path(
-            request=request,
-            market_data=market_data,
-            calendar_client=cal,
-            limits_client=lim,
-            corporate_action_unresolved_by_day=corporate_action_unresolved_by_day,
-            hk_lot_sizes=hk_lot_sizes,
-            timeout_seconds=timeout_seconds,
-        )
-    elif _orders_at_end:
-        # Saved accounts must scan every intervening day, including actions,
-        # while applying explicit orders only at the chosen execution close.
-        outcome = engine.run_day_loop(
-            market=request.market, account_state=request.account_state,
-            from_date=request.from_date, to_date=request.to_date, market_data=market_data,
-            orders_by_day={request.to_date: request.orders or ()}, fee_model=request.fee_model,
-            calendar_client=cal, limits_client=lim, hk_lot_sizes=hk_lot_sizes,
-            corporate_action_unresolved_by_day=corporate_action_unresolved_by_day)
-    else:
-        outcome = engine.match_orders(
-            request,
-            market_data=market_data,
-            calendar_client=cal,
-            limits_client=lim,
-            corporate_action_unresolved_by_day=corporate_action_unresolved_by_day,
-            hk_lot_sizes=hk_lot_sizes,
+            outcome = run_strategy_path(
+                request=request,
+                market_data=market_data,
+                calendar_client=cal,
+                limits_client=lim,
+                corporate_action_unresolved_by_day=corporate_action_unresolved_by_day,
+                hk_lot_sizes=hk_lot_sizes,
+                timeout_seconds=timeout_seconds,
+            )
+        elif _orders_at_end:
+            # Saved accounts must scan every intervening day, including actions,
+            # while applying explicit orders only at the chosen execution close.
+            outcome = engine.run_day_loop(
+                market=request.market, account_state=request.account_state,
+                from_date=request.from_date, to_date=request.to_date, market_data=market_data,
+                orders_by_day={request.to_date: request.orders or ()}, fee_model=request.fee_model,
+                calendar_client=cal, limits_client=lim, hk_lot_sizes=hk_lot_sizes,
+                corporate_action_unresolved_by_day=corporate_action_unresolved_by_day)
+        else:
+            outcome = engine.match_orders(
+                request,
+                market_data=market_data,
+                calendar_client=cal,
+                limits_client=lim,
+                corporate_action_unresolved_by_day=corporate_action_unresolved_by_day,
+                hk_lot_sizes=hk_lot_sizes,
+            )
+    except PaperDataUnavailable as exc:
+        return _error_document(
+            "PAPER_DATA_NOT_READY", request.account_id, request.market,
+            request.from_date, request.to_date, str(exc), raw_payload,
         )
 
     # 5. In-band error envelope, or the success document.  The hash covers the

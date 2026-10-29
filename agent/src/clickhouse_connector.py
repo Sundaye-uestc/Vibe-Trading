@@ -39,6 +39,7 @@ class ClickHouseConnector:
         self._auth = httpx.BasicAuth(user if user is not None else cfg.clickhouse_user,
                                     password if password is not None else cfg.clickhouse_password)
         self.timeout = cfg.clickhouse_timeout_seconds
+        self._paper_managed: bool | None = None
 
     def query(self, sql: str, params: dict[str, str] | None = None) -> pd.DataFrame:
         """Run one SELECT with server-side bindings, never exposing error bodies."""
@@ -77,4 +78,44 @@ class ClickHouseConnector:
             "AND replaceAll(toString(cal_date), '-', '') >= {start_date:String} "
             "AND replaceAll(toString(cal_date), '-', '') <= {end_date:String} ORDER BY cal_date",
             params={"param_start_date": start.strftime("%Y%m%d"), "param_end_date": end.strftime("%Y%m%d")},
+        )
+
+    def has_managed_paper_data(self) -> bool:
+        """Recognise the importer contract without treating query errors as absence."""
+        if self._paper_managed is None:
+            frame = self.query(
+                "SELECT name FROM system.tables WHERE database = currentDatabase() "
+                "AND name IN ('paper_daily_status', 'paper_data_coverage')"
+            )
+            names = set(frame["name"].astype(str)) if "name" in frame else set()
+            if names and names != {"paper_daily_status", "paper_data_coverage"}:
+                raise RuntimeError("Paper data contract is incomplete")
+            self._paper_managed = bool(names)
+        return self._paper_managed
+
+    def get_paper_daily_status(self, start_date: str, end_date: str, symbols: list[str]) -> pd.DataFrame | None:
+        """Explicit observed ST/suspension states; None denotes a legacy source."""
+        if not self.has_managed_paper_data():
+            return None
+        if not symbols:
+            return pd.DataFrame()
+        clauses = [f"ts_code = {{symbol{i}:String}}" for i in range(len(symbols))]
+        params = {"param_start": start_date, "param_end": end_date,
+                  **{f"param_symbol{i}": symbol for i, symbol in enumerate(symbols)}}
+        return self.query(
+            "SELECT ts_code, trade_date, is_st, is_suspended, source, observed_at "
+            "FROM paper_daily_status WHERE trade_date >= {start:String} AND trade_date <= {end:String} "
+            "AND (" + " OR ".join(clauses) + ") ORDER BY ts_code, trade_date LIMIT 100001",
+            params=params,
+        )
+
+    def get_paper_data_coverage(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame | None:
+        """Read declared import coverage; unmarked external databases stay legacy."""
+        if not self.has_managed_paper_data():
+            return None
+        return self.query(
+            "SELECT dataset, ts_code, from_date, to_date, status, source, snapshot_id, observed_at "
+            "FROM paper_data_coverage WHERE ts_code = {symbol:String} "
+            "AND from_date <= {end:String} AND to_date >= {start:String} LIMIT 1001",
+            params={"param_symbol": symbol, "param_start": start_date, "param_end": end_date},
         )

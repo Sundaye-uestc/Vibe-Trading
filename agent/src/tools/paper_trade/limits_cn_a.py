@@ -231,24 +231,76 @@ class ClickHouseLimitsClient:
 
     def __init__(self, connector: _QueryConnector) -> None:
         self._connector = connector
+        self._observations = None
+        self._event_frames = {}
+
+    def validate_coverage(self, symbols, start: str, end: str, trading_days) -> None:
+        import pandas as pd
+        from .coverage import PaperDataUnavailable, daily_status, verify_event_rows
+
+        self._observations = daily_status(self._connector, symbols, start, end, trading_days)
+        # Cross-check event views with the explicit observed zeros as well as
+        # positives. A missing view or corrupt view must not become "not ST".
+        if self._observations is not None and symbols:
+            clauses = [f"ts_code = {{symbol{i}:String}}" for i in range(len(symbols))]
+            params = {"param_start": start, "param_end": end,
+                      **{f"param_symbol{i}": symbol for i, symbol in enumerate(symbols)}}
+            for kind, table, columns in (("st_status", "stk_st_daily", "type, type_name"),
+                                         ("suspensions", "stk_suspend", "suspend_type, suspend_timing")):
+                try:
+                    frame = self._connector.query(
+                        f"SELECT ts_code, trade_date, {columns} FROM {table} "
+                        "WHERE trade_date >= {start:String} AND trade_date <= {end:String} "
+                        "AND (" + " OR ".join(clauses) + ") LIMIT 100001", params=params)
+                    if len(frame) > 100000:
+                        raise ValueError("Too many event rows")
+                    rows = frame.to_dict("records")
+                    verify_event_rows(self._observations, rows, kind)
+                    for symbol in symbols:
+                        for day in trading_days:
+                            matching = [row for row in rows if str(row["ts_code"]) == symbol
+                                        and str(row["trade_date"])[:10] == day]
+                            self._event_frames[table, day, symbol] = pd.DataFrame(matching, columns=columns.split(", "))
+                except Exception as exc:
+                    raise PaperDataUnavailable("Managed ST/suspension event views are inconsistent or unreadable") from exc
 
     def _lookup(self, table: str, columns: str, trade_date: str, ts_code: str) -> "pd.DataFrame":
+        cached = self._event_frames.get((table, trade_date, ts_code))
+        if cached is not None:
+            return cached.copy()
         sql = (
             f"SELECT {columns} FROM {table} "
             "WHERE trade_date = {trade_date:String} AND ts_code = {ts_code:String}"
         )
-        return self._connector.query(
-            sql, params={"param_trade_date": trade_date, "param_ts_code": ts_code}
-        )
+        from .coverage import PaperDataUnavailable
+
+        try:
+            return self._connector.query(
+                sql, params={"param_trade_date": trade_date, "param_ts_code": ts_code}
+            )
+        except Exception as exc:
+            raise PaperDataUnavailable("A-share event data could not be read; ledger unchanged") from exc
 
     def get_stk_limit(self, trade_date: str, ts_code: str) -> "pd.DataFrame":
         return self._lookup("stk_limit", "up_limit, down_limit", trade_date, ts_code)
 
     def get_stk_st_daily(self, trade_date: str, ts_code: str) -> "pd.DataFrame":
-        return self._lookup("stk_st_daily", "type, type_name", trade_date, ts_code)
+        frame = self._lookup("stk_st_daily", "type, type_name", trade_date, ts_code)
+        self._verify_status(ts_code, trade_date, "is_st", bool(len(frame)))
+        return frame
 
     def get_stk_suspend(self, trade_date: str, ts_code: str) -> "pd.DataFrame":
-        return self._lookup("stk_suspend", "suspend_type, suspend_timing", trade_date, ts_code)
+        frame = self._lookup("stk_suspend", "suspend_type, suspend_timing", trade_date, ts_code)
+        self._verify_status(ts_code, trade_date, "is_suspended", _is_suspended(_records(frame)))
+        return frame
+
+    def _verify_status(self, symbol, day, field, actual):
+        from .coverage import PaperDataUnavailable
+
+        if self._observations is not None:
+            expected = self._observations.get((symbol, day))
+            if expected is None or expected[field] != actual:
+                raise PaperDataUnavailable("A-share event view contradicts the managed daily observation")
 
     def get_stk_limit_list(self, trade_date: str, ts_code: str) -> "pd.DataFrame":
         # `limit` is a SQL keyword — backtick-quoted in ClickHouse.

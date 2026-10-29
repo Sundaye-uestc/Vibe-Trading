@@ -26,6 +26,7 @@ from backtest.loaders.registry import register
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+_RAW_BASE_URL = "https://web.ifzq.gtimg.cn/appstock/app/kline/kline"
 
 # Tencent fqkline caps a single response at `_PAGE_SIZE` bars.  Requests for a
 # multi-year window (e.g. 2018-2025 daily) silently truncate at 500 bars
@@ -105,7 +106,7 @@ class DataLoader:
         return result
 
     def _request_page(
-        self, code: str, start_date: str, end_date: str,
+        self, code: str, start_date: str, end_date: str, forward_adjusted: bool = True,
     ) -> Optional[pd.DataFrame]:
         """Fetch up to `_PAGE_SIZE` bars in [start_date, end_date]."""
         if not _is_a_share(code) and not _is_hk_equity(code):
@@ -126,8 +127,9 @@ class DataLoader:
             return None
 
         url = (
-            f"{_BASE_URL}?param={tencent_code},day,"
-            f"{start_date},{end_date},{_PAGE_SIZE},qfq"
+            f"{_BASE_URL if forward_adjusted else _RAW_BASE_URL}?param={tencent_code},day,"
+            f"{start_date},{end_date},{_PAGE_SIZE}"
+            f"{',qfq' if forward_adjusted else ''}"
         )
 
         req = urllib.request.Request(url, headers={
@@ -138,6 +140,8 @@ class DataLoader:
             raw = resp.read().decode("utf-8")
 
         data = json.loads(raw)
+        if data.get("code") not in (0, None) and not data.get("data"):
+            raise ValueError(f"tencent kline error reply: code={data.get('code')}")
         # Response: {"code":0,"data":{"sh601595":{"day":[["2026-06-01","21.32",...], ...]}}}
         stock_data = data.get("data", {})
         if not stock_data:
@@ -148,8 +152,11 @@ class DataLoader:
         if not stock_key:
             return None
 
-        # Try "day" first, then "qfqday" (forward-adjusted)
-        klines = stock_data[stock_key].get("qfqday") or stock_data[stock_key].get("day")
+        # The raw path never borrows qfq bars if the raw series is absent.
+        klines = (
+            stock_data[stock_key].get("qfqday") or stock_data[stock_key].get("day")
+            if forward_adjusted else stock_data[stock_key].get("day")
+        )
         if not klines:
             return None
 
@@ -178,7 +185,7 @@ class DataLoader:
         return df
 
     def _fetch_one(
-        self, code: str, start_date: str, end_date: str,
+        self, code: str, start_date: str, end_date: str, forward_adjusted: bool = True,
     ) -> Optional[pd.DataFrame]:
         """Paginate [start_date, end_date] in `_PAGE_SIZE`-bar windows.
 
@@ -189,7 +196,9 @@ class DataLoader:
         quietly short series, matching the other bounded-window loaders.
         """
         chunks: List[pd.DataFrame] = []
-        cursor = start_date
+        # Preserve the research-loader path. The new raw execution endpoint
+        # serves its last N bars, so only that path walks backward from end.
+        cursor = start_date if forward_adjusted else end_date
         seen_starts: set[str] = set()
 
         for _ in range(_MAX_PAGES):
@@ -204,7 +213,11 @@ class DataLoader:
             last_error: Optional[Exception] = None
             for attempt in range(_PAGE_RETRIES):
                 try:
-                    page = self._request_page(code, cursor, end_date)
+                    page = (
+                        self._request_page(code, cursor, end_date)
+                        if forward_adjusted
+                        else self._request_page(code, start_date, cursor, forward_adjusted=False)
+                    )
                     last_error = None
                     break
                 except Exception as exc:  # noqa: BLE001 - transient network jitter
@@ -226,11 +239,18 @@ class DataLoader:
             # A short page means the window is exhausted.
             if len(page) < _PAGE_SIZE:
                 break
-            last = page.index.max()
-            next_start = (last + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-            if next_start > end_date:
-                break
-            cursor = next_start
+            if forward_adjusted:
+                last = page.index.max()
+                next_start = (last + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+                if next_start > end_date:
+                    break
+                cursor = next_start
+            else:
+                oldest = page.index.min()
+                previous_end = (oldest - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+                if previous_end < start_date:
+                    break
+                cursor = previous_end
         else:
             raise ValueError(
                 f"incomplete tencent history: {code} hit {_MAX_PAGES} pages "
@@ -241,4 +261,7 @@ class DataLoader:
             return None
         df = pd.concat(chunks)
         df = df[~df.index.duplicated(keep="last")].sort_index()
+        if not forward_adjusted:
+            df = df.loc[start_date:end_date]
+            df.attrs["adjustment"] = "raw"
         return df

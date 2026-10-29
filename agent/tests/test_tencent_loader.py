@@ -54,6 +54,52 @@ def _patch_http(monkeypatch, urls: list[str], payload: str) -> None:
     )
 
 
+def test_raw_execution_uses_separate_endpoint_and_never_qfq_fallback(monkeypatch):
+    from src.tools.paper_trade.raw_loader import TencentRawLoader
+
+    urls = []
+    payload = {"code": 0, "data": {"sh600519": {
+        "day": [["2026-01-05", "11", "11", "11", "11", "100"]],
+        "qfqday": [["2026-01-05", "9", "9", "9", "9", "100"]],
+    }}}
+    _patch_http(monkeypatch, urls, json.dumps(payload))
+    monkeypatch.setattr(tencent_loader, "cached_loader_fetch", lambda **kwargs:
+                        pytest.fail("Raw execution prices must not use the adjusted cache"))
+    frame = TencentRawLoader().fetch(["600519.SH"], "2026-01-01", "2026-01-31")["600519.SH"]
+    assert frame.iloc[0]["close"] == 11
+    assert frame.attrs["adjustment"] == "raw"
+    assert "/kline/kline?" in urls[0] and "qfq" not in urls[0]
+
+    payload["data"]["sh600519"].pop("day")
+    _patch_http(monkeypatch, urls, json.dumps(payload))
+    assert TencentRawLoader().fetch(["600519.SH"], "2026-01-01", "2026-01-31") == {}
+
+
+def test_raw_execution_pages_backwards_without_losing_earlier_bars(monkeypatch):
+    from src.tools.paper_trade.raw_loader import TencentRawLoader
+
+    monkeypatch.setattr(tencent_loader, "_PAGE_SIZE", 2)
+    dates = pd.date_range("2026-01-01", periods=5)
+    frame = pd.DataFrame({key: [10.0] * 5 for key in ["open", "high", "low", "close", "volume"]}, index=dates)
+    windows = []
+
+    def page(self, code, start, end, forward_adjusted=True):
+        assert forward_adjusted is False
+        windows.append((start, end))
+        return frame.loc[start:end].tail(2)
+
+    monkeypatch.setattr(tencent_loader.DataLoader, "_request_page", page)
+    result = TencentRawLoader().fetch(["600519.SH"], "2026-01-01", "2026-01-05")["600519.SH"]
+    assert list(result.index) == list(dates)
+    assert windows == [("2026-01-01", "2026-01-05"), ("2026-01-01", "2026-01-03"), ("2026-01-01", "2026-01-01")]
+
+
+def test_raw_error_reply_does_not_masquerade_as_an_empty_window(monkeypatch):
+    _patch_http(monkeypatch, [], json.dumps({"code": 1, "data": {}}))
+    with pytest.raises(ValueError, match="error reply"):
+        tencent_loader.DataLoader()._request_page("600519.SH", "2026-01-01", "2026-01-05", forward_adjusted=False)
+
+
 def test_intraday_request_does_not_return_daily_bars(monkeypatch) -> None:
     calls: list[str] = []
     daily = pd.DataFrame(

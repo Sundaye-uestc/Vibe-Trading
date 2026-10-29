@@ -9,6 +9,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from src.tools import tushare_fallbacks as tf
 
 
@@ -37,11 +39,59 @@ def test_fund_flow_maps_moneyflow_buckets_to_existing_schema() -> None:
     row = result["rows"][0]
     assert result["source"] == "tushare"
     assert row["timestamp"] == "2024-01-03"
-    assert row["main"] == 125000.0
+    assert row["main"] == 330000.0
+    assert row["net_total"] == 125000.0
     assert row["small"] == 20000.0
     assert row["medium"] == -30000.0
     assert row["large"] == 130000.0
     assert row["super_large"] == 200000.0
+    assert "main = large + super_large" in result["methodology"]
+
+
+@pytest.mark.parametrize("buy,sell,expected", [
+    (None, 2.0, None), (2.0, None, None), (None, None, None),
+    ("nan", 2.0, None), (2.0, "inf", None),
+    (1e308, -1e308, None), (0.0, 0.0, 0.0), (0.0, 2.0, -20000.0),
+])
+def test_fund_flow_preserves_unknown_buckets_and_real_zero(buy, sell, expected):
+    pro = SimpleNamespace(moneyflow=lambda **_: [{
+        "trade_date": "20240103", "buy_lg_amount": buy, "sell_lg_amount": sell,
+        "buy_elg_amount": 5.0, "sell_elg_amount": 1.0,
+    }])
+    with patch.object(tf, "_pro_api", return_value=pro):
+        row = tf.fetch_fund_flow("600519.SH", days=5)["rows"][0]
+    assert row["large"] == expected
+    assert row["main"] == (None if expected is None else expected + 40000.0)
+    assert row["small"] is None
+    assert row["medium"] is None
+    assert row["net_total"] is None
+
+
+@pytest.mark.parametrize("raw", [None, "nan", "inf", "-inf", 1e308])
+def test_fund_flow_unknown_total_is_not_zero_or_nonfinite(raw):
+    pro = SimpleNamespace(moneyflow=lambda **_: [{"trade_date": "20240103", "net_mf_amount": raw}])
+    with patch.object(tf, "_pro_api", return_value=pro):
+        row = tf.fetch_fund_flow("600519.SH", days=5)["rows"][0]
+    assert row["net_total"] is None
+    assert row["main"] is None
+
+
+def test_fund_flow_rejects_an_empty_fallback_instead_of_claiming_recovery():
+    with patch.object(tf, "_pro_api", return_value=SimpleNamespace(moneyflow=lambda **_: [])):
+        with pytest.raises(tf.TushareFallbackUnavailable, match="no fund-flow rows"):
+            tf.fetch_fund_flow("600519.SH", days=5)
+
+
+def test_fund_flow_main_sum_overflow_is_unknown():
+    pro = SimpleNamespace(moneyflow=lambda **_: [{
+        "trade_date": "20240103", "buy_lg_amount": 1e304, "sell_lg_amount": 0,
+        "buy_elg_amount": 1e304, "sell_elg_amount": 0,
+    }])
+    with patch.object(tf, "_pro_api", return_value=pro):
+        row = tf.fetch_fund_flow("600519.SH", days=1)["rows"][0]
+    assert row["large"] == 1e308
+    assert row["super_large"] == 1e308
+    assert row["main"] is None
 
 
 def test_dragon_tiger_maps_top_list_and_top_inst() -> None:

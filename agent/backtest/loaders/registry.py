@@ -280,6 +280,21 @@ def price_caliber(source: str, market: str | None = None) -> str:
     )
 
 
+def frame_caliber(frame: object, source: str, market: str | None = None, symbol: str | None = None) -> str:
+    """Prefer a loader's explicit frame caliber, otherwise use its source.
+
+    ``symbol`` is accepted for callers that carry instrument identity. This
+    fork keeps the existing source/market table as its fallback; an unknown
+    source is never inferred to serve raw execution prices.
+    """
+    del symbol
+    attrs = getattr(frame, "attrs", None)
+    adjustment = attrs.get("adjustment") if isinstance(attrs, dict) else None
+    if isinstance(adjustment, str) and adjustment:
+        return adjustment
+    return price_caliber(source, market)
+
+
 def mixed_caliber_warning(stamps: dict[str, tuple[str, str]]) -> str | None:
     """Build the mixed-caliber warning for a served basket, or None.
 

@@ -74,12 +74,14 @@ def validate_columns_required(cols: list[str]) -> None:
 
     Raises:
         ValueError: If a column is neither a known price column nor a
-            ``fund:``-prefixed fundamental column.
+            ``fund:``-prefixed fundamental or ``val:``-prefixed valuation column.
     """
     for column in cols:
         if column in _PRICE_COLS:
             continue
         if column.startswith("fund:"):
+            continue
+        if column.startswith("val:"):
             continue
         raise ValueError(f"unknown panel column: {column}")
 
@@ -108,8 +110,8 @@ class AlphaMeta(BaseModel):
         """Validate factor panel dependencies.
 
         Price columns are fixed, while fundamental fields are an open namespace
-        under the ``fund:`` prefix. The runtime loader decides whether a
-        particular fundamental field can be populated.
+        under the ``fund:`` prefix and valuations use ``val:``. The runtime
+        loaders validate which fields they can populate.
 
         Args:
             v: Declared panel columns.
@@ -119,7 +121,7 @@ class AlphaMeta(BaseModel):
 
         Raises:
             ValueError: If any column is outside the price set and the
-                ``fund:`` namespace.
+                ``fund:`` / ``val:`` namespaces.
         """
         validate_columns_required(v)
         return v

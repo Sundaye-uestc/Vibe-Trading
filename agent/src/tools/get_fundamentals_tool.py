@@ -66,10 +66,12 @@ class GetFundamentalsTool(BaseTool):
 
     name = "get_fundamentals"
     description = (
+        "US-only SEC XBRL fundamentals; not for A-shares or Hong Kong stocks. "
         "Fetch PIT-safe fundamental fields as daily wide panels aligned by filed "
         "date. Returns {field: date x symbol records}. Fields use the unified "
         "fundamental schema, e.g. roe, gross_profitability, net_income, "
-        "shares_diluted. Default freq is ttm and PIT mode is on."
+        "shares_diluted. Daily valuation ratios such as pe_ttm, pb and ps_ttm "
+        "are not supported fields. Default freq is ttm and PIT mode is on."
     )
     parameters = {
         "type": "object",

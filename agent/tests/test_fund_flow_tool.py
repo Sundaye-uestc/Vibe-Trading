@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import pytest
+
 from src.tools.fund_flow_tool import FundFlowTool
 
 _DAILY_PAYLOAD = {
@@ -37,6 +39,7 @@ class TestSuccessEnvelope:
         assert payload["ok"] is True
         assert payload["market"] == "stock"
         assert payload["source"] == "eastmoney"
+        assert payload["data"]["600519.SH"]["source"] == "eastmoney"
         assert payload["period"] == "daily"
         assert payload["buckets"] == ["main", "small", "medium", "large", "super_large"]
 
@@ -132,6 +135,7 @@ class TestPerSymbolIsolation:
 
         fallback_fetch.assert_called_once_with("600519.SH", days=5)
         payload = json.loads(text)
+        assert payload["source"] == "tushare"
         result = payload["data"]["600519.SH"]
         assert result["source"] == "tushare"
         assert result["rows"][0]["timestamp"] == "2024-01-03"
@@ -146,6 +150,71 @@ class TestPerSymbolIsolation:
 
         rows = json.loads(text)["data"]["600519.SH"]["rows"]
         assert len(rows) == 1
+
+
+@pytest.mark.parametrize("primary", [
+    {"data": None}, {"data": {"klines": []}},
+    {"data": {"klines": ["invalid", "2024-01-03,nan,1,2,3,4"]}},
+    {"data": {"klines": ["2024-01-03,1,2,3,4,inf"]}},
+])
+def test_empty_or_invalid_daily_response_recovers_with_labelled_tushare(primary):
+    fallback = {"symbol": "600519.SH", "source": "tushare", "rows": [{"timestamp": "2024-01-03", "main": None}]}
+    with (
+        patch("src.tools.fund_flow_tool.resolve_secid", return_value="1.600519"),
+        patch("src.tools.fund_flow_tool.get_json", return_value=primary),
+        patch("src.tools.fund_flow_tool.tushare_fallbacks.fetch_fund_flow", return_value=fallback) as fetch,
+    ):
+        result = json.loads(FundFlowTool().execute(codes=["600519.SH"], days=5))
+    fetch.assert_called_once_with("600519.SH", days=5)
+    assert result["source"] == "tushare"
+    assert result["data"]["600519.SH"]["rows"][0]["main"] is None
+    assert "warning" in result["data"]["600519.SH"]
+    assert "warning" not in fallback  # do not mutate a shared provider result
+
+
+@pytest.mark.parametrize("failure", ["empty", "network", "unresolvable"])
+def test_minute_requests_never_substitute_daily_fallback(failure):
+    with (
+        patch("src.tools.fund_flow_tool.resolve_secid", return_value=None if failure == "unresolvable" else "1.600519"),
+        patch("src.tools.fund_flow_tool.get_json", return_value={"data": None},
+              side_effect=RuntimeError("timeout") if failure == "network" else None),
+        patch("src.tools.fund_flow_tool.tushare_fallbacks.fetch_fund_flow") as fallback,
+    ):
+        payload = json.loads(FundFlowTool().execute(codes=["600519.SH"], period="min"))
+    fallback.assert_not_called()
+    assert payload["source"] is None
+    assert not payload["data"]["600519.SH"].get("rows")
+
+
+def test_mixed_batch_reports_each_symbols_actual_source():
+    def fetch(_url, *, params):
+        if params["secid"] == "1.600519":
+            return _DAILY_PAYLOAD
+        return {"data": None}
+
+    with (
+        patch("src.tools.fund_flow_tool.resolve_secid", side_effect=lambda code: "1.600519" if code == "600519.SH" else "0.000001"),
+        patch("src.tools.fund_flow_tool.get_json", side_effect=fetch),
+        patch("src.tools.fund_flow_tool.tushare_fallbacks.fetch_fund_flow", return_value={
+            "symbol": "000001.SZ", "source": "tushare", "rows": [{"timestamp": "2024-01-03", "main": 20.0}],
+        }),
+    ):
+        result = json.loads(FundFlowTool().execute(codes=["600519.SH", "000001.SZ"]))
+    assert result["source"] == "mixed"
+    assert result["data"]["600519.SH"]["source"] == "eastmoney"
+    assert result["data"]["000001.SZ"]["source"] == "tushare"
+
+
+def test_failed_fallback_keeps_both_failure_reasons_without_false_source():
+    with (
+        patch("src.tools.fund_flow_tool.resolve_secid", return_value="1.600519"),
+        patch("src.tools.fund_flow_tool.get_json", return_value={"data": None}),
+        patch("src.tools.fund_flow_tool.tushare_fallbacks.fetch_fund_flow", side_effect=RuntimeError("permission denied")),
+    ):
+        result = json.loads(FundFlowTool().execute(codes=["600519.SH"]))
+    assert result["source"] is None
+    assert "no valid fund-flow rows" in result["data"]["600519.SH"]["error"]
+    assert result["data"]["600519.SH"]["fallback_error"] == "permission denied"
 
 
 class TestErrorEnvelope:

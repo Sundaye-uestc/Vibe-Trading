@@ -725,6 +725,43 @@ def _select_alpha_ids(
     return registry.list()
 
 
+def _prepare_valuation_panel(registry: Any, alpha_ids: list[str], panel: dict,
+                             universe: str, period: str) -> dict:
+    """Attach only selected val:* inputs, without changing the price panel.
+
+    Missing valuation coverage stays NaN so one unsupported factor is skipped
+    rather than aborting unrelated price factors in the same batch. Existing
+    caller-supplied valuation frames are preserved. CSI300 price/constituent
+    acquisition retains its own requirements; this is a valuation fallback.
+    """
+    columns = sorted({str(column) for aid in alpha_ids
+                      for column in (registry.get(aid).meta or {}).get("columns_required", [])
+                      if str(column).startswith("val:") and column not in panel})
+    if not columns:
+        return panel
+    from backtest.loaders.valuation_loader import load_valuation_panel, validate_valuation_fields
+
+    fields = validate_valuation_fields(column[4:] for column in columns)
+    close = panel["close"]
+    start, end = _parse_period(period)
+    loaded = load_valuation_panel(symbols=list(close.columns), fields=fields, start=start, end=end,
+                                  index=close.index) if universe == "csi300" else {}
+    enriched = dict(panel)
+    metadata = {}
+    for column, field in zip(columns, fields):
+        frame = loaded.get(field)
+        if frame is None:
+            frame = pd.DataFrame(np.nan, index=close.index, columns=close.columns)
+        provenance = dict(frame.attrs.get("valuation", {}))
+        aligned = frame.reindex(index=close.index, columns=close.columns).where(close.notna())
+        enriched[column] = aligned
+        metadata[column] = {**provenance, "masked_by_price_panel": True,
+                            "source_counts_basis": "provider observations before the price-panel mask",
+                            "usable_observations": int(aligned.notna().sum().sum())}
+    enriched["_meta"] = {**panel.get("_meta", {}), "valuation": metadata}
+    return enriched
+
+
 # ---------------------------------------------------------------------------
 # HTML rendering
 # ---------------------------------------------------------------------------
@@ -1003,6 +1040,7 @@ def run_alpha_bench(**kwargs: Any) -> dict[str, Any]:
     # Load panel — W4 universe loader fetches constituents + OHLCV (+ amount, vwap).
     try:
         panel = _load_universe_panel(universe, period)
+        panel = _prepare_valuation_panel(registry, alpha_ids, panel, universe, period)
     except (ValueError, NotImplementedError, RuntimeError) as exc:
         return {
             "status": "error",
@@ -1046,6 +1084,7 @@ def run_alpha_bench(**kwargs: Any) -> dict[str, Any]:
         "n_skipped": len(failures),
         "top": top,
         "failures": failures[:10],
+        "meta": panel.get("_meta", {}),
     }
 
     try:
@@ -1063,6 +1102,7 @@ def run_alpha_bench(**kwargs: Any) -> dict[str, Any]:
         "n_alphas_tested": len(results),
         "n_skipped": len(failures),
         "top": top,
+        "meta": panel.get("_meta", {}),
     }
 
 

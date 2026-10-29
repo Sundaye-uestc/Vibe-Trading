@@ -63,7 +63,7 @@ from src.factors.registry import (
     SkipAlpha,
     get_default_registry,
 )
-from src.tools.alpha_bench_tool import _compute_forward_returns, _load_universe_panel
+from src.tools.alpha_bench_tool import _compute_forward_returns, _load_universe_panel, _prepare_valuation_panel
 
 logger = logging.getLogger(__name__)
 
@@ -430,6 +430,7 @@ def run_bench_strict(
 
     try:
         panel = _load_universe_panel(universe, period)
+        panel = _prepare_valuation_panel(reg, alpha_ids, panel, universe, period)
     except (ValueError, NotImplementedError, RuntimeError) as exc:
         return _finish_error(f"universe load failed: {exc}")
 

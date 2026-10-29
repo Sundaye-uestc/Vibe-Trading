@@ -143,6 +143,8 @@ def _screen_market(market: str, *, sort_by: str, top_n: int) -> list[dict[str, A
             "fid": _SORT_FID[sort_by],
             "fs": _MARKET_FS[market],
             "fields": _FIELDS,
+            # Without fltt=2 push2 returns scaled integer prices/percents.
+            "fltt": "2",
         },
     )
     data = payload.get("data") if isinstance(payload, dict) else None

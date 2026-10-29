@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import pytest
+
 from src.tools.market_screener_tool import MarketScreenerTool
 
 _CLIST_PAYLOAD = {
@@ -120,6 +122,26 @@ class TestSuccessEnvelope:
         # bare list, with an empty "rows".
         assert payload["data"]["rows"] == []
         assert payload["data"]["sort_by"] == "change_pct"
+
+
+@pytest.mark.parametrize("market", ["a", "hk", "us"])
+def test_requests_decimal_prices_and_percentages_from_the_provider(market):
+    def clist(_url, *, params):
+        # push2's unformatted response scales these values by 100. Exercise
+        # the complete request/parser path, not just a literal parameter.
+        scale = 1 if str(params.get("fltt")) == "2" else 100
+        return {"data": {"diff": [{
+            "f12": "000001", "f14": "Example", "f2": 3.03 * scale,
+            "f3": 10.18 * scale, "f4": 0.28 * scale, "f8": 1.23 * scale,
+        }]}}
+
+    with patch("src.tools.market_screener_tool.get_json", side_effect=clist):
+        row = json.loads(MarketScreenerTool().execute(market=market))["data"]["rows"][0]
+    assert row["price"] == pytest.approx(3.03)
+    assert row["change_pct"] == pytest.approx(10.18)
+    assert row["change"] == pytest.approx(0.28)
+    assert row["turnover_rate"] == pytest.approx(1.23)
+    assert row["code"] == "000001"
 
 
 class TestErrorEnvelope:

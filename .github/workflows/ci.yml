@@ -37,21 +37,11 @@ jobs:
           python -m pip check
       - name: Run backend tests and dependency consistency checks
         run: python -m pytest -q agent/tests
-      - name: Verify report font resources in the wheel
+      - name: Verify installed wheel resources and runtime imports
         run: |
           python -m pip wheel --no-deps --wheel-dir dist .
-          python - <<'PY'
-          from pathlib import Path
-          from zipfile import ZipFile
-
-          wheels = list(Path("dist").glob("vibe_trading_ai-*.whl"))
-          assert len(wheels) == 1, wheels
-          with ZipFile(wheels[0]) as wheel:
-              for name in ("VibeReportCJK-Regular.ttf", "OFL.txt", "README.md"):
-                  resource = f"src/channels/fonts/{name}"
-                  assert resource in wheel.namelist(), f"Missing packaged resource: {resource}"
-                  assert wheel.read(resource), f"Empty packaged resource: {resource}"
-          PY
+          python -m pip install --no-deps --target "$RUNNER_TEMP/vibe-wheel-smoke" dist/vibe_trading_ai-*.whl
+          python -I scripts/check_packaged_runtime.py "$RUNNER_TEMP/vibe-wheel-smoke"
 
   frontend:
     runs-on: ubuntu-24.04

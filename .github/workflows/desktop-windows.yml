@@ -10,6 +10,7 @@ on:
       - "desktop/electron/**"
       - "frontend/**"
       - "pyproject.toml"
+      - "scripts/check_packaged_runtime.py"
   pull_request:
     paths:
       - ".github/workflows/desktop-windows.yml"
@@ -17,6 +18,7 @@ on:
       - "desktop/electron/**"
       - "frontend/**"
       - "pyproject.toml"
+      - "scripts/check_packaged_runtime.py"
 
 permissions:
   contents: read

@@ -387,6 +387,11 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Embedded backend import smoke test failed.'
 }
 
+& $runtimePython -I (Join-Path $repoRoot 'scripts\check_packaged_runtime.py') $sitePackages
+if ($LASTEXITCODE -ne 0) {
+    throw 'Embedded backend packaged-resource verification failed.'
+}
+
 $inventoryScript = @'
 import importlib.metadata
 import json

@@ -802,6 +802,20 @@ def register_sessions_routes(app: FastAPI) -> None:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 
+    @app.post("/sessions/{session_id}/attempts/{attempt_id}/recover-team-reply", dependencies=[Depends(require_auth)])
+    async def recover_team_reply(session_id: str, attempt_id: str):
+        """Revalidate the recorded answer locally; start no research or model calls."""
+        _host_validate_path_param(session_id, "session_id")
+        _host_validate_path_param(attempt_id, "attempt_id")
+        svc, _ = _get_existing_session_or_404(session_id)
+        try:
+            message = await svc.recover_team_reply(session_id, attempt_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Session or attempt not found") from exc
+        except (SessionBusyError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"message_id": message.message_id, "session_id": session_id, "recovered_from_attempt": attempt_id}
+
     @app.get("/sessions/{session_id}/messages", response_model=List[MessageResponse], dependencies=[Depends(require_auth)])
     async def get_messages(session_id: str, limit: int = Query(100, ge=1, le=1000)):
         """List messages for a session."""

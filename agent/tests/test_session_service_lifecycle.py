@@ -181,6 +181,33 @@ def _stub_agent(service: SessionService, monkeypatch, result: dict, *, gate=None
     monkeypatch.setattr(service, "_run_with_agent", _fake)
 
 
+def test_partial_verified_answer_preserves_degraded_flag_in_history_and_events(tmp_path, monkeypatch):
+    async def scenario():
+        service = _service(tmp_path, monkeypatch)
+        session = service.create_session(title="Partial evidence")
+        events = []
+        original_emit = service.event_bus.emit
+
+        def record(sid, kind, data):
+            events.append((kind, data))
+            return original_emit(sid, kind, data)
+
+        monkeypatch.setattr(service.event_bus, "emit", record)
+        _stub_agent(service, monkeypatch, {"status": "success", "content": "Verified observations; unsupported metrics withheld.",
+                                           "degraded": True, "reason": "grounding_incomplete: analysis_claim_unavailable"})
+        await service.send_message(session.session_id, "Research")
+        for _ in range(100):
+            await asyncio.sleep(.01)
+            if session.session_id not in service._inflight:
+                break
+        reply = service.store.get_messages(session.session_id)[-1]
+        assert reply.role == "assistant" and reply.metadata["degraded"] is True
+        assert reply.content == "Verified observations; unsupported metrics withheld."
+        assert any(kind == "attempt.completed" and data.get("degraded") is True for kind, data in events)
+
+    asyncio.run(scenario())
+
+
 # ---------------------------------------------------------------------------
 # Concurrency
 # ---------------------------------------------------------------------------

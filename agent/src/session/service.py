@@ -402,6 +402,34 @@ class SessionService:
         """Return the message history."""
         return self.store.get_messages(session_id, limit)
 
+    async def recover_team_reply(self, session_id: str, attempt_id: str) -> Message:
+        """Append a verified repair after the latest fallback, once per attempt."""
+        from src.session.team_recovery import TeamRecoveryError, recover_recorded_interpretation
+
+        self._reserve_session(session_id)
+        try:
+            session = self.store.get_session(session_id)
+            attempt = self.store.get_attempt(session_id, attempt_id)
+            if session is None or attempt is None:
+                raise KeyError("Session or attempt not found.")
+            tail = self.store.get_messages(session_id, 1)
+            if session.last_attempt_id != attempt_id or not tail:
+                raise TeamRecoveryError("Only the most recent attempt can be recovered in place.")
+            last = tail[0]
+            if last.message_id == f"recovered_{attempt_id}" and last.metadata.get("recovered_from_attempt") == attempt_id:
+                return last
+            recovery = await asyncio.to_thread(
+                recover_recorded_interpretation, self.store.base_dir, self.runs_dir, attempt, last
+            )
+            current = self.store.get_session(session_id)
+            if current is None or current.last_attempt_id != attempt_id or self.store.get_messages(session_id, 1) != tail:
+                raise TeamRecoveryError("The conversation changed while the reply was being recovered.")
+            self.store.append_message(recovery)
+            self._search_index.index_message(session_id, "assistant", recovery.content)
+            return recovery
+        finally:
+            self._release_session(session_id)
+
     def cancel_current(self, session_id: str) -> bool:
         """Cancel the currently running AgentLoop for a session.
 
@@ -674,6 +702,8 @@ class SessionService:
                 if recovery_context:
                     reply_metadata["recovery_context"] = recovery_context
             reply_metadata["status"] = attempt.status.value
+            if result.get("degraded"):
+                reply_metadata["degraded"] = True
             if attempt.metrics:
                 reply_metadata["metrics"] = attempt.metrics
             reply_metadata["elapsed_ms"] = max(0, round((time.perf_counter() - started_at) * 1000))
@@ -715,7 +745,7 @@ class SessionService:
                 {"attempt_id": attempt.attempt_id, "status": attempt.status.value,
                  "summary": attempt.summary, "error": attempt.error, "run_dir": attempt.run_dir,
                  "started_at": wall_started_at, "ended_at": time.time(),
-                 **{key: reply_metadata[key] for key in ("elapsed_ms", *runtime_keys) if key in reply_metadata}},
+                 **{key: reply_metadata[key] for key in ("elapsed_ms", "degraded", *runtime_keys) if key in reply_metadata}},
             )
 
         except asyncio.CancelledError:
@@ -1045,6 +1075,8 @@ class SessionService:
             tool_trail.append(match)
 
         match["status"] = "ok" if data.get("status") == "ok" else "error"
+        if match["status"] == "error" and data.get("outcome") in ("needs_resolution", "no_data", "error"):
+            match["outcome"] = data["outcome"]
         elapsed_ms = data.get("elapsed_ms")
         if isinstance(elapsed_ms, (int, float)) and not isinstance(elapsed_ms, bool):
             match["elapsed_ms"] = max(0, int(elapsed_ms))

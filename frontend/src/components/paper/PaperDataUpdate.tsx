@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
+import { Database, RefreshCw } from "lucide-react";
 import { paperApi, type PaperDataStatus } from "@/lib/api";
 
-const field = "mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm";
-const button = "rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50";
+const field = "studio-paper-field mt-1";
+const button = "studio-paper-button";
 const JOB_LABELS = {
   updated: "paper.dataJob_updated",
   up_to_date: "paper.dataJob_up_to_date",
@@ -127,17 +128,17 @@ export function PaperDataUpdate({ disabled, onBusyChange }: {
   const jobLabel = job && Object.prototype.hasOwnProperty.call(JOB_LABELS, job.code)
     ? JOB_LABELS[job.code as keyof typeof JOB_LABELS] : JOB_LABELS.update_failed;
   return (
-    <section aria-labelledby="paper-data-title" className="space-y-4 rounded-2xl border border-border bg-card p-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 id="paper-data-title" className="text-lg font-semibold">{t("paper.dataTitle")}</h2>
+    <section aria-labelledby="paper-data-title" className="studio-paper-data studio-paper-panel">
+      <div className="studio-paper-section-heading">
+        <h2 id="paper-data-title"><Database size={16} aria-hidden="true" />{t("paper.dataTitle")}</h2>
         <button type="button" className={button} disabled={disabled || loading || action !== null}
-          onClick={() => void refresh()}>{t(action === "refresh" ? "paper.dataRefreshing" : "paper.dataRefresh")}</button>
+          onClick={() => void refresh()}><RefreshCw size={14} aria-hidden="true" className={action === "refresh" ? "animate-spin" : undefined} />{t(action === "refresh" ? "paper.dataRefreshing" : "paper.dataRefresh")}</button>
       </div>
       <p className="text-sm text-muted-foreground">{t("paper.dataHint")}</p>
       {loading && <p className="text-sm" role="status">{t("paper.dataLoading")}</p>}
       {error && <p role="alert" className="break-words text-sm text-danger">{error}</p>}
       {notice && <p role="status" className="text-sm">{notice}</p>}
-      {status && <p className="text-sm text-muted-foreground">
+      {status && <p className="studio-paper-data-boundary">
         {t(`paper.dataState_${status.status_code}`)} · {t("paper.dataClosedThrough")}: {status.latest_closed_date}
       </p>}
       <form onSubmit={save} className="space-y-3">
@@ -150,22 +151,22 @@ export function PaperDataUpdate({ disabled, onBusyChange }: {
           <p id="paper-data-symbol-hint" className="text-xs text-muted-foreground">{t("paper.dataSymbolHint", { count: maxSymbols })}</p>
           <div className="flex flex-wrap items-center gap-3">
             <button className={button} type="submit" disabled={!valid || !dirty}>{t(action === "save" ? "paper.dataSaving" : "paper.dataSave")}</button>
-            <button className={`${button} bg-primary text-primary-foreground`} type="button"
+            <button className={`${button} studio-paper-button--primary`} type="button"
               disabled={dirty || !status?.update_available || !status.watchlist.length}
               onClick={() => void mutate("update")}>{t(action === "update" || remoteRunning ? "paper.dataUpdating" : "paper.dataUpdate")}</button>
           </div>
           {dirty && <p className="text-xs text-muted-foreground">{t("paper.dataSaveFirst")}</p>}
         </fieldset>
       </form>
-      {job && <div className="rounded-lg border border-border p-3 text-sm" role={job.status === "failed" ? "alert" : "status"}>
+      {job && <div className="studio-paper-data-job" data-status={job.status} role={job.status === "failed" ? "alert" : "status"}>
         <p className="font-medium">{t("paper.dataLastUpdate")} · {t(job.outcome_unknown
           ? "paper.dataOutcomeUnknown" : job.status === "running" ? "paper.dataUpdating" : jobLabel)}</p>
         <p className="mt-1 break-words text-xs text-muted-foreground">{displayTime(job.finished_at ?? job.started_at)}</p>
         {job.updated_symbols.length > 0 && <p className="mt-1 break-words">{job.updated_symbols.join(", ")}</p>}
       </div>}
-      {status && <div aria-label={t("paper.dataCoverage")} className="grid gap-3 lg:grid-cols-2">
+      {status && <div aria-label={t("paper.dataCoverage")} className="studio-paper-coverage">
         {status.coverage.length === 0 && <p className="text-sm text-muted-foreground">{t("paper.dataNoCoverage")}</p>}
-        {status.coverage.map((item) => <article key={item.symbol} className="space-y-2 rounded-lg border border-border p-3 text-sm">
+        {status.coverage.map((item) => <article key={item.symbol} className="studio-paper-coverage-item" data-status={item.status}>
           <p className="font-medium">{item.symbol} · {t(`paper.dataCoverage_${item.status}`)}</p>
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
             <dt className="text-muted-foreground">{t("paper.dataRange")}</dt><dd className="break-words">{item.from_date ?? "—"} ～ {item.to_date ?? "—"}</dd>

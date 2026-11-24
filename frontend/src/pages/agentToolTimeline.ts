@@ -4,16 +4,50 @@ import {
   type AgentActivity,
   type StoredAgentMessage,
 } from "@/stores/agent";
+import type { ToolFailureOutcome, ToolStepStatus } from "@/types/agent";
 
 export interface ToolTimelineEntry {
   id?: string;
   call_id?: string;
   tool: string;
   arguments?: Record<string, string>;
-  status?: "running" | "ok" | "error";
+  status?: ToolStepStatus;
+  outcome?: ToolFailureOutcome;
   preview?: string;
   elapsed_ms?: number;
   timestamp?: number;
+}
+
+// Older sessions kept the first 200 characters of the locally generated
+// denial. Require its exact envelope and message prefix, plus zero runtime.
+// A source timeout, ambiguous provider search or free-text error stays red.
+const legacyIdentityDenials = [
+  ["identity_required", "A canonical, non-conflicting identity was not locked"],
+  ["identity_conflict", "A canonical, non-conflicting identity was not locked"],
+  ["identity_mismatch", "Consumer symbol/venue differs from the locked resolver identity"],
+  ["identity_required", "Market-sensitive workflow selection is blocked"],
+  ["identity_required", "Private-company routing requires a completed resolver result"],
+  ["identity_conflict", "A resolver has locked this entity to a listed security"],
+];
+
+function historicalStepStatus(entry: ToolTimelineEntry): ToolStepStatus {
+  // Previously an exhausted market lookup could be stored as successful.
+  // Only a complete legacy payload with no symbol panel establishes this.
+  if (entry.status === "ok" && entry.tool === "get_market_data" && entry.preview?.includes('"_unresolved"')) {
+    try {
+      const data = JSON.parse(entry.preview);
+      if (data && Array.isArray(data._unresolved) && data._unresolved.length &&
+          Object.keys(data).every((key) => key.startsWith("_"))) {
+        return data._source_error === true ? "error" : "no_data";
+      }
+    } catch { /* Truncated previews keep their recorded status. */ }
+  }
+  if (entry.status !== "error") return entry.status || "ok";
+  if (entry.outcome) return entry.outcome;
+  if (entry.elapsed_ms === 0 && entry.preview && legacyIdentityDenials.some(([code, message]) =>
+    entry.preview!.startsWith(`{"status": "error", "error_code": "${code}", "tool": ${JSON.stringify(entry.tool)}, "message": "${message}`),
+  )) return "needs_resolution";
+  return "error";
 }
 
 interface ToolTimelineOptions {
@@ -38,7 +72,7 @@ export function buildToolTimelineMessages(
     id: entry.id || entry.call_id || `${entry.tool}#${index + 1}`,
     tool: entry.tool,
     arguments: entry.arguments ?? {},
-    status: entry.status || "ok",
+    status: historicalStepStatus(entry),
     preview: entry.preview,
     elapsed_ms: entry.elapsed_ms,
     timestamp: (

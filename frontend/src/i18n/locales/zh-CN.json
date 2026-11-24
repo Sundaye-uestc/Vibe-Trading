@@ -49,13 +49,18 @@
     "storageReclaimed": "已清理此前存储的图片以腾出空间",
     "changeBackground": "更换背景",
     "applyBackground": "应用背景",
-    "removeBackground": "移除背景",
+    "removeBackground": "恢复默认场景",
     "backgroundSizeHint": "上传图片作为应用背景（最大 5MB）",
     "backgroundApplied": "背景已应用",
-    "backgroundRemoved": "背景已移除",
+    "backgroundRemoved": "已恢复默认场景",
     "dragToCrop": "拖拽图片调整裁剪区域",
     "avatarPreview": "预览",
-    "paperTrading": "模拟交易"
+    "paperTrading": "模拟交易",
+    "workspaceGroup": "工作空间",
+    "researchGroup": "研究工具",
+    "openNavigation": "打开导航",
+    "closeNavigation": "关闭导航",
+    "sessionActionFailed": "操作未完成，请重试"
   },
   "runtime": {
     "monitorBadge": "交易监控",
@@ -373,7 +378,12 @@
       "shadowBacktest": "影子账户回测",
       "memory": "持久化记忆",
       "sessionSearch": "会话搜索"
-    }
+    },
+    "studioEyebrow": "留一点空间，想得更清楚",
+    "studioTitleFirst": "让每一个想法，",
+    "studioTitleSecond": "都有据可依。",
+    "studioPromptLabel": "从一个问题开始",
+    "studioTraceCaption": "提问 · 研究 · 验证"
   },
   "settings": {
     "title": "设置",
@@ -685,6 +695,7 @@
         "working": "正在处理"
       },
       "done": "完成",
+      "partial": "部分完成",
       "stopped": "已由你停止",
       "timeout": "等待 {{elapsed}} 后已停止——运行可能仍在后台完成",
       "failed": "失败",
@@ -1271,6 +1282,10 @@
     "daysHours": "{{d}}天{{h}}小时"
   },
   "swarmStatus": {
+    "teamDraft": "查看团队原稿",
+    "draftSource": "团队提交的研究原稿。主 Agent 的校验结果见对话回复。",
+    "retryDraft": "原稿加载失败，点击重试",
+    "noDraft": "团队未保存原稿。",
     "agents": "{{done}}/{{total}} 个智能体",
     "layer": "第 {{current}}/{{total}} 轮",
     "agent": "智能体",
@@ -1316,6 +1331,7 @@
   },
   "messageBubble": {
     "elapsedTime": "本次回复总耗时",
+    "partialResultHint": "本次回复仅包含部分结果。",
     "copied": "已复制",
     "copy": "复制",
     "copyFailed": "复制失败，请选择文本后按 Ctrl+C。",
@@ -1374,6 +1390,8 @@
     "reset": "重置"
   },
   "toolProgress": {
+    "noData": "未取得数据",
+    "needsResolution": "待确认标的",
     "step": "步骤 {{step}} · {{tool}}",
     "toolsRunning": "同时在做 {{count}} 件事",
     "toolsCompleted": "已完成 {{count}} 步",
@@ -1869,6 +1887,10 @@
     "dataMissingCount": "缺失日期数",
     "dataSettlementHint": "数据覆盖不代表一定可结算；仍需满足账户起始日期、收盘时间、数据检查和订单规则。",
     "dataJob_data_not_ready": "数据源尚未提供完整日线，已有数据保留，请稍后手动更新。",
-    "dataOutcomeUnknown": "更新结果尚不确定。请先刷新状态确认已发布的数据，再决定是否重试。"
+    "dataOutcomeUnknown": "更新结果尚不确定。请先刷新状态确认已发布的数据，再决定是否重试。",
+    "studioEyebrow": "策略试验场",
+    "studioOverview": "账户概览",
+    "studioPositions": "持仓标的",
+    "studioLedgerDate": "账本更新至"
   }
 }

@@ -27,6 +27,20 @@ function makeTc(overrides: Partial<ToolCallEntry> = {}): ToolCallEntry {
 }
 
 describe("ToolProgressIndicator", () => {
+  it("labels the held instrument and keeps a separate red icon for actual source failures", () => {
+    const { container } = render(<ToolProgressIndicator toolCalls={[
+      makeTc({ tool: "get_market_data", status: "needs_resolution", arguments: { codes: "MSFT.US", source: "yahoo" } }),
+      makeTc({ id: "real", tool: "get_market_data", status: "error", arguments: { codes: "AAPL.US" } }),
+      makeTc({ id: "empty", tool: "get_stock_news", status: "no_data" }),
+    ]} />);
+    expect(screen.getByText("toolProgress.needsResolution")).toBeInTheDocument();
+    expect(screen.getByText("toolProgress.noData")).toBeInTheDocument();
+    expect(screen.getByText("MSFT.US")).toBeInTheDocument();
+    expect(container.querySelectorAll("svg.text-danger")).toHaveLength(1);
+    expect(container.querySelector("svg.text-success")).not.toBeInTheDocument();
+    expect(container.querySelector("svg.animate-spin")).not.toBeInTheDocument();
+  });
+
   it("keeps completed tools visible for the remainder of the attempt", () => {
     const tcs = [makeTc({ status: "ok" }), makeTc({ id: "tc-2", status: "error" })];
     render(<ToolProgressIndicator toolCalls={tcs} />);

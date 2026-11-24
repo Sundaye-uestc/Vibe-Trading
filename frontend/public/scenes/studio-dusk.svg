@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2400 1600" fill="none">
+  <defs>
+    <linearGradient id="sky" x1="1200" y1="0" x2="1200" y2="1200" gradientUnits="userSpaceOnUse"><stop stop-color="#36474b"/><stop offset=".52" stop-color="#8d8173"/><stop offset="1" stop-color="#c09872"/></linearGradient>
+    <linearGradient id="water" x1="1300" y1="680" x2="1300" y2="1600" gradientUnits="userSpaceOnUse"><stop stop-color="#7e8276"/><stop offset="1" stop-color="#263d3e"/></linearGradient>
+    <linearGradient id="floor" x1="1600" y1="1180" x2="1100" y2="1600" gradientUnits="userSpaceOnUse"><stop stop-color="#585044"/><stop offset="1" stop-color="#222b2c"/></linearGradient>
+    <radialGradient id="light"><stop stop-color="#f2b47d" stop-opacity=".5"/><stop offset="1" stop-color="#f2b47d" stop-opacity="0"/></radialGradient>
+    <filter id="haze"><feGaussianBlur stdDeviation="28"/></filter>
+  </defs>
+  <path fill="url(#sky)" d="M0 0h2400v1600H0z"/>
+  <ellipse cx="1730" cy="600" rx="650" ry="510" fill="url(#light)"/>
+  <circle cx="1730" cy="580" r="75" fill="#e6bc91" opacity=".7" filter="url(#haze)"/>
+  <path d="M0 750 180 655 355 715 650 540 805 635 1110 475 1295 630 1530 550 1760 700 1960 610 2200 705 2400 620v800H0Z" fill="#5d6f6c" opacity=".62"/>
+  <path d="m0 900 210-165 165 90 230-70 145 105 255-155 185 125 235-45 240 145 235-115 280 90 220-40v735H0Z" fill="#435c58"/>
+  <path d="M0 1030c400-150 650-125 930-80 420 80 650 18 1470-140v790H0Z" fill="url(#water)"/>
+  <path d="M1310 990h460m-390 24h560m-690 42h350m-145 32h380m-540 45h470" stroke="#c3b99d" stroke-opacity=".12" stroke-width="2"/>
+  <path d="M0 0h220v1600H0z" fill="#18272a"/>
+  <path d="M215 0h28v1600h-28zM1080 0h18v1300h-18zM2250 0h150v1600h-150z" fill="#1b292b" opacity=".85"/>
+  <path d="M230 1240h2170v360H0v-270Z" fill="url(#floor)"/>
+  <path d="m240 1254 1400 346m-543-346 803 346m350-346 150 346" stroke="#9c8b72" stroke-opacity=".1" stroke-width="2"/>
+  <path d="M0 1350h680l230 250H0Z" fill="#1b292b"/>
+  <path d="M2070 1040c-60-120-75-245-30-340m20 215c75-90 119-153 110-215m-115 300c-112-52-159-120-150-187" stroke="#263d35" stroke-width="14" stroke-linecap="round"/>
+  <path d="M2005 1040h145l-20 220h-105z" fill="#3d4941"/>
+  <path d="M0 0h2400v1600H0z" fill="#17242b" opacity=".2"/>
+</svg>

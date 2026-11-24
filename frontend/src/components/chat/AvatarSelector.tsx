@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { X, Upload, ImageIcon, Type, Move } from "lucide-react";
+import { Upload, ImageIcon, Type, Move } from "lucide-react";
 import { toast } from "sonner";
+import { DialogSurface } from "@/components/common/DialogSurface";
 import { getAgentAvatarConfig, getUserAvatarConfig, type AvatarConfig, type ImagePosition } from "./AgentAvatar";
 import {
   AVATAR_RESIZE_TARGET,
@@ -175,19 +176,8 @@ export function AvatarSelector({ open, onClose }: Props) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      {/* Dialog */}
-      <div className="relative bg-card border rounded-2xl shadow-xl w-[380px] max-w-[95vw] p-6 space-y-5 max-h-[90vh] overflow-y-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">{t("layout.changeAvatar")}</h3>
-          <button onClick={onClose} className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
+    <DialogSurface open={open} title={t("layout.changeAvatar")} closeLabel={t("layout.cancel")} onClose={onClose}>
+      <div className="space-y-5">
         {/* Tabs: Agent / User */}
         <div className="flex rounded-lg bg-muted p-0.5">
           {(["agent", "user"] as AvatarTab[]).map((tabOpt) => (
@@ -348,6 +338,6 @@ export function AvatarSelector({ open, onClose }: Props) {
           {t("layout.saveAvatar")}
         </button>
       </div>
-    </div>
+    </DialogSurface>
   );
 }

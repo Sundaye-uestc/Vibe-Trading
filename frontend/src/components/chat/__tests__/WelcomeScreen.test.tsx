@@ -15,20 +15,8 @@ describe("WelcomeScreen", () => {
           taskSubtitle: "What would you like to research, test, or understand today?",
           quickActions: "Quick actions",
           browseAllExamples: "Browse all examples",
-          greetings: {
-            morning1: "Good morning.",
-            morning2: "Morning — ready when you are.",
-            morning3: "Good morning. Let's get started.",
-            afternoon1: "Good afternoon.",
-            afternoon2: "Ready for the next question?",
-            afternoon3: "What are we exploring this afternoon?",
-            evening1: "Good evening.",
-            evening2: "Let's make sense of the market.",
-            evening3: "Ready for some focused research?",
-            night1: "Still thinking?",
-            night2: "Let's work through it.",
-            night3: "One more idea before you wrap up?",
-          },
+          studioTitleFirst: "Every idea deserves",
+          studioTitleSecond: "a clearer view.",
         },
       },
       true,
@@ -44,19 +32,9 @@ describe("WelcomeScreen", () => {
     vi.restoreAllMocks();
   });
 
-  it.each([
-    [5, "Good morning."],
-    [12, "Good afternoon."],
-    [17, "Good evening."],
-    [22, "Still thinking?"],
-  ])("renders the local-hour greeting for %i:00", (hour, greeting) => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(2026, 6, 29, hour));
-    vi.spyOn(Math, "random").mockReturnValue(0);
-
+  it("introduces the research workspace with one clear heading and a task description", () => {
     render(<WelcomeScreen onExample={onExample} />);
-
-    expect(screen.getByRole("heading", { name: greeting })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Every idea deserves a clearer view." })).toBeInTheDocument();
     expect(
       screen.getByText("What would you like to research, test, or understand today?"),
     ).toBeInTheDocument();

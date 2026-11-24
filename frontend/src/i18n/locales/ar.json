@@ -61,13 +61,18 @@
     "storageReclaimed": "Freed space by clearing a previously stored image",
     "changeBackground": "Change Background",
     "applyBackground": "Apply Background",
-    "removeBackground": "Remove Background",
+    "removeBackground": "استعادة المشهد الافتراضي",
     "backgroundSizeHint": "Upload an image as app background (max 5MB)",
     "backgroundApplied": "Background applied",
-    "backgroundRemoved": "Background removed",
+    "backgroundRemoved": "تمت استعادة المشهد الافتراضي",
     "dragToCrop": "Drag to adjust crop area",
     "avatarPreview": "Preview",
-    "paperTrading": "التداول التجريبي"
+    "paperTrading": "التداول التجريبي",
+    "workspaceGroup": "مساحة العمل",
+    "researchGroup": "أدوات البحث",
+    "openNavigation": "فتح التنقل",
+    "closeNavigation": "إغلاق التنقل",
+    "sessionActionFailed": "تعذر إكمال الإجراء. حاول مجددًا."
   },
   "runtime": {
     "monitorBadge": "مراقبة التداول",
@@ -385,7 +390,12 @@
       "shadowBacktest": "Shadow Account Backtest",
       "memory": "Persistent Memory",
       "sessionSearch": "Session Search"
-    }
+    },
+    "studioEyebrow": "مساحة لرؤية أوضح",
+    "studioTitleFirst": "كل فكرة تستحق",
+    "studioTitleSecond": "رؤية أكثر وضوحًا.",
+    "studioPromptLabel": "ابدأ بسؤال",
+    "studioTraceCaption": "سؤال · بحث · تحقق"
   },
   "settings": {
     "title": "الإعدادات",
@@ -697,6 +707,7 @@
         "working": "جارٍ العمل"
       },
       "done": "تم",
+      "partial": "اكتمل جزئيًا",
       "stopped": "أوقفته أنت",
       "timeout": "توقف الانتظار بعد {{elapsed}} — ربما لا يزال التشغيل في مراحله النهائية",
       "failed": "فشل",
@@ -1283,6 +1294,10 @@
     "daysHours": "{{d}}d{{h}}h"
   },
   "swarmStatus": {
+    "teamDraft": "عرض مسودة الفريق",
+    "draftSource": "هذه مسودة البحث التي قدمها الفريق. تظهر مراجعة الوكيل الرئيسي في رد المحادثة.",
+    "retryDraft": "تعذّر تحميل المسودة. أعد المحاولة",
+    "noDraft": "لم يحفظ الفريق مسودة.",
     "agents": "{{done}}/{{total}} وكيل",
     "layer": "الجولة {{current}} من {{total}}",
     "agent": "الوكيل",
@@ -1328,6 +1343,7 @@
   },
   "messageBubble": {
     "elapsedTime": "إجمالي وقت الاستجابة",
+    "partialResultHint": "تحتوي هذه الإجابة على نتائج جزئية فقط.",
     "copied": "تم النسخ",
     "copy": "نسخ",
     "copyFailed": "فشل النسخ. حدّد النص واضغط Ctrl+C.",
@@ -1374,6 +1390,8 @@
     "somethingWrong": "حدث خطأ ما. أعد تحميل الصفحة للمتابعة."
   },
   "toolProgress": {
+    "noData": "لم يتم الحصول على بيانات",
+    "needsResolution": "يتطلب تأكيد الأداة المالية",
     "step": "الخطوة {{step}} · {{tool}}",
     "toolsRunning": "جارٍ العمل على {{count}} مهام في آن واحد",
     "toolsCompleted": "اكتملت {{count}} خطوات",
@@ -1869,6 +1887,10 @@
     "dataMissingCount": "عدد التواريخ المفقودة",
     "dataSettlementHint": "التغطية لا تضمن التسوية. يظل تاريخ بدء الحساب وإغلاق السوق وفحص البيانات وقواعد الأوامر سارية.",
     "dataJob_data_not_ready": "لم يوفر المصدر بيانات يومية مكتملة بعد. تُحفظ البيانات الحالية؛ حدّثها يدويًا لاحقًا.",
-    "dataOutcomeUnknown": "نتيجة التحديث غير مؤكدة. حدّث الحالة للتأكد من البيانات المنشورة قبل إعادة المحاولة."
+    "dataOutcomeUnknown": "نتيجة التحديث غير مؤكدة. حدّث الحالة للتأكد من البيانات المنشورة قبل إعادة المحاولة.",
+    "studioEyebrow": "مساحة لتجربة الاستراتيجيات",
+    "studioOverview": "نظرة عامة على الحساب",
+    "studioPositions": "المراكز",
+    "studioLedgerDate": "السجل حتى"
   }
 }

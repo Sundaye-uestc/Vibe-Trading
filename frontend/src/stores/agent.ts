@@ -10,6 +10,7 @@ export type ActivityState =
   | "stopped"
   | "timeout"
   | "failed"
+  | "partial"
   | "done";
 
 export type ActivityVerb =
@@ -239,7 +240,7 @@ export const useAgentStore = create<AgentState>((set) => ({
   setActivityState: (state, at = Date.now()) =>
     set((s) => {
       if (!s.activity) return {};
-      const terminal = ["stopped", "timeout", "failed", "done"].includes(state);
+      const terminal = ["stopped", "timeout", "failed", "partial", "done"].includes(state);
       return {
         activity: {
           ...s.activity,

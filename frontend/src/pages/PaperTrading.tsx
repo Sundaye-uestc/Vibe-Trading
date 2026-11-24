@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { FlaskConical, Plus, Trash2 } from "lucide-react";
+import { ArrowUpRight, FlaskConical, Plus, Trash2 } from "lucide-react";
+import "@/styles/paper-studio.css";
 import { PaperDataUpdate } from "@/components/paper/PaperDataUpdate";
 import { PaperDataCheck } from "@/components/paper/PaperDataCheck";
 import {
@@ -11,11 +12,9 @@ import {
   type PaperResult,
 } from "@/lib/api";
 
-const field =
-  "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm";
-const button =
-  "rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50";
-const panel = "rounded-2xl border border-border bg-card p-5 space-y-4";
+const field = "studio-paper-field";
+const button = "studio-paper-button";
+const panel = "studio-paper-panel";
 
 export function PaperTrading() {
   const { t } = useTranslation();
@@ -155,34 +154,43 @@ export function PaperTrading() {
     }
   }
   const shown = result ?? account?.last_result;
+  const navPoints = account?.last_result?.nav_series;
+  const latestNav = navPoints?.[navPoints.length - 1];
   const number = (value: number) =>
     value.toLocaleString(undefined, { maximumFractionDigits: 4 });
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-4 sm:p-8">
-      <header className="space-y-2">
-        <div className="flex items-center gap-3">
-          <FlaskConical className="text-primary" />
-          <h1 className="text-2xl font-semibold">{t("paper.title")}</h1>
+    <div className="studio-paper">
+      <header className="studio-paper-header">
+        <div className="studio-paper-kicker"><span aria-hidden="true" />{t("paper.studioEyebrow", { defaultValue: "A SPACE TO REHEARSE" })}</div>
+        <div className="studio-paper-heading-row">
+          <h1>{t("paper.title")}</h1>
+          <FlaskConical className="studio-paper-emblem" aria-hidden="true" />
         </div>
-        <p className="max-w-3xl text-sm text-muted-foreground">
+        <p className="studio-paper-description">
           {t("paper.description")}
         </p>
-        {(account?.market ?? market) === "cn_a" && (
-          <p className="max-w-3xl text-sm text-muted-foreground">{t("paper.dataRequirements")}</p>
-        )}
       </header>
       {error && (
         <div
           role="alert"
-          className="rounded-lg border border-danger/30 bg-danger/10 p-3 text-sm"
+          className="studio-paper-alert"
         >
           {error}
         </div>
       )}
-      {(account?.market ?? market) === "cn_a" && <PaperDataUpdate disabled={busy || loading} onBusyChange={setDataBusy} />}
-      <PaperDataCheck key={`${selected}:${account?.market ?? market}`} market={account?.market ?? market} disabled={busy || loading || dataBusy} />
-      <div className="grid gap-6 lg:grid-cols-[minmax(260px,1fr)_2fr]">
-        <aside className="space-y-4">
+      {account && <section className="studio-paper-overview" aria-label={t("paper.studioOverview", { defaultValue: "Account overview" })}>
+        <div className="studio-paper-overview-heading">
+          <span>{account.label}</span>
+          <span>{t("paper.studioLedgerDate", { defaultValue: "Ledger through" })} · {account.last_date ?? t("paper.pending")}</span>
+        </div>
+        <dl className="studio-paper-metrics">
+          <div><dt>{t("paper.cash")}</dt><dd>{number(account.account_state.cash)} <small>{currency}</small></dd></div>
+          <div><dt>{t("paper.nav")}</dt><dd>{latestNav ? number(latestNav.nav) : "—"} <small>{currency}</small></dd></div>
+          <div><dt>{t("paper.studioPositions", { defaultValue: "Positions" })}</dt><dd>{account.account_state.positions.length.toString().padStart(2, "0")}</dd></div>
+        </dl>
+      </section>}
+      <div className="studio-paper-columns">
+        <aside className="studio-paper-sidebar">
           <section className={panel}>
             <label className="block text-sm font-medium">
               {t("paper.accounts")}
@@ -202,20 +210,13 @@ export function PaperTrading() {
             </label>
             {account && (
               <>
-                <p className="text-sm text-muted-foreground">
+                <p className="studio-paper-eligible text-sm text-muted-foreground">
                   {t("paper.eligible", { date: account.start_on })}
-                </p>
-                <p className="text-2xl font-semibold">
-                  {number(account.account_state.cash)}{" "}
-                  <span className="text-sm">{currency}</span>
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {t("paper.cash")} · {account.last_date ?? t("paper.pending")}
                 </p>
                 {account.account_state.positions.map((p) => (
                   <div
                     key={p.symbol}
-                    className="flex justify-between gap-2 text-sm"
+                    className="studio-paper-position"
                   >
                     <span>{p.symbol}</span>
                     <span>
@@ -226,11 +227,16 @@ export function PaperTrading() {
               </>
             )}
           </section>
+          {(account?.market ?? market) === "cn_a" && (
+            <p className="studio-paper-data-requirements">{t("paper.dataRequirements")}</p>
+          )}
+          {(account?.market ?? market) === "cn_a" && <PaperDataUpdate disabled={busy || loading} onBusyChange={setDataBusy} />}
+          <PaperDataCheck key={`${selected}:${account?.market ?? market}`} market={account?.market ?? market} disabled={busy || loading || dataBusy} />
         </aside>
-        <div className="min-w-0 space-y-5">
+        <div className="studio-paper-editor">
           {!account ? (
-            <form onSubmit={create} className={panel}>
-              <fieldset disabled={busy || loading || dataBusy} className="min-w-0 space-y-4">
+            <form onSubmit={create} className={`${panel} studio-paper-form`}>
+              <fieldset disabled={busy || loading || dataBusy} className="studio-paper-fieldset">
               <h2 className="text-lg font-semibold">{t("paper.newAccount")}</h2>
               <label className="block text-sm">
                 {t("paper.label")}
@@ -288,7 +294,7 @@ export function PaperTrading() {
               </p>
               {positions.map((p, i) => (
                 <div
-                  className="grid grid-cols-[2fr_1fr_1fr_auto] gap-2"
+                  className="studio-paper-order-row"
                   key={i}
                 >
                   <input
@@ -366,15 +372,15 @@ export function PaperTrading() {
               </button>
               <button
                 disabled={busy}
-                className={`${button} bg-primary text-primary-foreground`}
+                className={`${button} studio-paper-button--primary`}
               >
-                {t(busy ? "paper.working" : "paper.create")}
+                {t(busy ? "paper.working" : "paper.create")}<ArrowUpRight size={16} aria-hidden="true" />
               </button>
               </fieldset>
             </form>
           ) : (
-            <form onSubmit={advance} className={panel}>
-              <fieldset disabled={busy || loading || dataBusy} className="min-w-0 space-y-4">
+            <form onSubmit={advance} className={`${panel} studio-paper-form`}>
+              <fieldset disabled={busy || loading || dataBusy} className="studio-paper-fieldset">
               <h2 className="text-lg font-semibold">{t("paper.advance")}</h2>
               <p className="text-sm text-muted-foreground">
                 {t("paper.executionNote")}
@@ -418,7 +424,7 @@ export function PaperTrading() {
                   {orders.map((o, i) => (
                     <div
                       key={i}
-                      className="grid grid-cols-[2fr_1fr_1fr_auto] gap-2"
+                      className="studio-paper-order-row"
                     >
                       <input
                         aria-label={t("paper.symbol")}
@@ -503,15 +509,15 @@ export function PaperTrading() {
               )}
               <button
                 disabled={busy}
-                className={`${button} bg-primary text-primary-foreground`}
+                className={`${button} studio-paper-button--primary`}
               >
-                {t(busy ? "paper.working" : "paper.advance")}
+                {t(busy ? "paper.working" : "paper.advance")}<ArrowUpRight size={16} aria-hidden="true" />
               </button>
               </fieldset>
             </form>
           )}
           {notice && (
-            <p role="status" className="text-sm">
+            <p role="status" className="studio-paper-notice">
               {notice}
             </p>
           )}
@@ -531,7 +537,7 @@ export function PaperTrading() {
               )}
               {!!shown.fills?.length && (
                 <div className="overflow-x-auto">
-                  <table className="w-full text-start text-sm">
+                  <table className="studio-paper-table studio-paper-table--fills">
                     <thead>
                       <tr>
                         {(
@@ -585,7 +591,7 @@ export function PaperTrading() {
                 {t("paper.history")} ({currency})
               </h2>
               <div className="max-h-64 overflow-auto">
-                <table className="w-full text-sm">
+                <table className="studio-paper-table">
                   <thead>
                     <tr>
                       <th className="text-start">{t("paper.date")}</th>

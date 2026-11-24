@@ -1,6 +1,24 @@
 import { buildToolTimelineMessages } from "../agentToolTimeline";
 
 describe("buildToolTimelineMessages", () => {
+  it("distinguishes local preflight, including older sessions, from a real data error", () => {
+    const tool = "get_market_data";
+    const oldPreview = '{"status": "error", "error_code": "identity_conflict", "tool": "get_market_data", "message": "A canonical, non-conflicting identity was not locked before this assistant tool-call batch started. A reso';
+    const [message] = buildToolTimelineMessages([
+      { tool, status: "error", outcome: "needs_resolution" },
+      { tool, status: "error", outcome: "no_data" },
+      { tool, status: "ok", preview: '{"_unresolved":["X.US"]}' },
+      { tool, status: "ok", preview: '{"X.US":[{"close":5}],"_unresolved":["Y.US"]}' },
+      { tool, status: "error", elapsed_ms: 0, preview: oldPreview },
+      { tool, status: "error", elapsed_ms: 0, outcome: "error", preview: oldPreview },
+      { tool, status: "error", elapsed_ms: 0, preview: '{"error_code":"identity_conflict","error":"upstream failure"}' },
+      { tool, status: "error", elapsed_ms: 3600, preview: "Timeout contacting yahoo" },
+    ]);
+    expect(message.meta?.activity?.steps.map((entry) => entry.status)).toEqual([
+      "needs_resolution", "no_data", "no_data", "ok", "needs_resolution", "error", "error", "error",
+    ]);
+  });
+
   it("rebuilds one durable activity object from a persisted tool trail", () => {
     expect(buildToolTimelineMessages(
       [

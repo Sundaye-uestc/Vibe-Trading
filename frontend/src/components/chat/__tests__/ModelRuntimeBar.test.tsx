@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ModelRuntimeBar } from "../ModelRuntimeBar";
 import type { LLMSettings } from "@/lib/api";
@@ -133,4 +133,20 @@ describe("ModelRuntimeBar", () => {
 
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
+  it("supports keyboard choice and restores trigger focus after Escape", async () => {
+    const onEffortChange = vi.fn();
+    const user = userEvent.setup();
+    render(<ModelRuntimeBar settings={settings} onEffortChange={onEffortChange} />);
+    const trigger = screen.getByRole("button", { name: /Reasoning Effort/i });
+    trigger.focus();
+    await user.keyboard("{ArrowDown}");
+    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: "High" })).toHaveFocus());
+    await user.keyboard("{End}");
+    expect(screen.getByRole("menuitemradio", { name: "Max" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(onEffortChange).not.toHaveBeenCalled();
+  });
+
 });

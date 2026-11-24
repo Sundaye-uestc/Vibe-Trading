@@ -20,7 +20,7 @@ export default {
         info: "hsl(var(--info))",
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
+        sans: ["Inter", "-apple-system", "BlinkMacSystemFont", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "system-ui", "sans-serif"],
         // Display serif for the hero greeting only — system stack, no webfont.
         // Deliberately NOT used for answers/tables (numeric content stays sans/mono).
         serif: ["Georgia", "Songti SC", "Noto Serif SC", "serif"],

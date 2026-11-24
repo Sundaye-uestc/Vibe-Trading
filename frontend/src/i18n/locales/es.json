@@ -61,13 +61,18 @@
     "storageReclaimed": "Freed space by clearing a previously stored image",
     "changeBackground": "Change Background",
     "applyBackground": "Apply Background",
-    "removeBackground": "Remove Background",
+    "removeBackground": "Restaurar escena original",
     "backgroundSizeHint": "Upload an image as app background (max 5MB)",
     "backgroundApplied": "Background applied",
-    "backgroundRemoved": "Background removed",
+    "backgroundRemoved": "Escena original restaurada",
     "dragToCrop": "Drag to adjust crop area",
     "avatarPreview": "Preview",
-    "paperTrading": "Trading simulado"
+    "paperTrading": "Trading simulado",
+    "workspaceGroup": "Espacio de trabajo",
+    "researchGroup": "Herramientas de investigación",
+    "openNavigation": "Abrir navegación",
+    "closeNavigation": "Cerrar navegación",
+    "sessionActionFailed": "No se pudo completar la acción. Inténtalo de nuevo."
   },
   "runtime": {
     "monitorBadge": "Monitor de Runtime",
@@ -385,7 +390,12 @@
       "shadowBacktest": "Shadow Account Backtest",
       "memory": "Persistent Memory",
       "sessionSearch": "Session Search"
-    }
+    },
+    "studioEyebrow": "ESPACIO PARA VER CON CLARIDAD",
+    "studioTitleFirst": "Cada idea merece",
+    "studioTitleSecond": "una mirada clara.",
+    "studioPromptLabel": "Empieza con una pregunta",
+    "studioTraceCaption": "Preguntar · Investigar · Verificar"
   },
   "settings": {
     "title": "Configuración",
@@ -697,6 +707,7 @@
         "working": "Trabajando"
       },
       "done": "Listo",
+      "partial": "Resultado parcial",
       "stopped": "Detenido por ti",
       "timeout": "Se dejó de esperar después de {{elapsed}} — la ejecución puede seguir terminando",
       "failed": "Falló",
@@ -1283,6 +1294,10 @@
     "daysHours": "{{d}}d{{h}}h"
   },
   "swarmStatus": {
+    "teamDraft": "Ver borrador del equipo",
+    "draftSource": "Borrador del equipo. La revisión del agente principal aparece en el chat.",
+    "retryDraft": "Error al cargar el borrador. Reintentar",
+    "noDraft": "El equipo no guardó un borrador.",
     "agents": "{{done}}/{{total}} agentes",
     "layer": "Ronda {{current}} de {{total}}",
     "agent": "Agente",
@@ -1328,6 +1343,7 @@
   },
   "messageBubble": {
     "elapsedTime": "Tiempo total de respuesta",
+    "partialResultHint": "Esta respuesta contiene solo resultados parciales.",
     "copied": "Copiado",
     "copy": "Copiar",
     "copyFailed": "Error al copiar. Selecciona el texto y presiona Ctrl+C.",
@@ -1374,6 +1390,8 @@
     "somethingWrong": "Algo salió mal. Recarga la página para continuar."
   },
   "toolProgress": {
+    "noData": "Sin datos disponibles",
+    "needsResolution": "Instrumento por confirmar",
     "step": "Paso {{step}} · {{tool}}",
     "toolsRunning": "Trabajando en {{count}} cosas a la vez",
     "toolsCompleted": "Terminados {{count}} pasos",
@@ -1869,6 +1887,10 @@
     "dataMissingCount": "Fechas sin datos",
     "dataSettlementHint": "La cobertura no garantiza la liquidación. Se aplican la fecha inicial de la cuenta, el cierre del mercado, las comprobaciones y las reglas de órdenes.",
     "dataJob_data_not_ready": "La fuente aún no ha proporcionado datos diarios completos. Se conservan los datos existentes; actualiza manualmente más tarde.",
-    "dataOutcomeUnknown": "El resultado es incierto. Actualiza el estado para comprobar los datos publicados antes de reintentar."
+    "dataOutcomeUnknown": "El resultado es incierto. Actualiza el estado para comprobar los datos publicados antes de reintentar.",
+    "studioEyebrow": "UN ESPACIO PARA ENSAYAR",
+    "studioOverview": "Resumen de la cuenta",
+    "studioPositions": "Posiciones",
+    "studioLedgerDate": "Registro hasta"
   }
 }

@@ -41,6 +41,9 @@ export function ConfirmDialog({
     const previouslyFocused = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
+    const app = document.getElementById("root");
+    const wasInert = app?.inert ?? false;
+    if (app) app.inert = true;
     confirmRef.current?.focus();
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -74,6 +77,7 @@ export function ConfirmDialog({
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("keydown", onKeyDown);
+      if (app) app.inert = wasInert;
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
     };
   }, [open]);
@@ -82,7 +86,7 @@ export function ConfirmDialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      className="studio-modal-backdrop"
       onClick={onCancel}
     >
       <div
@@ -90,13 +94,13 @@ export function ConfirmDialog({
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="confirm-dialog-title"
-        className="w-full max-w-sm rounded-2xl border bg-background p-4 shadow-lg"
+        className="studio-modal w-full max-w-sm"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 id="confirm-dialog-title" className="text-sm font-semibold text-foreground">
+        <h2 id="confirm-dialog-title" className="text-lg font-medium text-foreground">
           {title}
         </h2>
-        {description && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{description}</p>}
+        {description && <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{description}</p>}
         {children && <div className="mt-3">{children}</div>}
         <div className="mt-4 flex justify-end gap-2">
           <button

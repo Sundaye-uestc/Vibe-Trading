@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, TrendingUp, Globe, Sparkles, Users, UserCircle2, NotebookPen, Landmark, Gem } from "lucide-react";
+import { ArrowUpRight, ChevronDown, TrendingUp, Globe, Sparkles, Users, UserCircle2, NotebookPen, Landmark, Gem } from "lucide-react";
 import { BrandMark } from "@/components/common/BrandMark";
 
 interface Example {
@@ -171,29 +171,6 @@ const CATEGORIES: Category[] = [
   },
 ];
 
-const GREETING_KEYS = {
-  morning: [
-    "welcome.greetings.morning1",
-    "welcome.greetings.morning2",
-    "welcome.greetings.morning3",
-  ],
-  afternoon: [
-    "welcome.greetings.afternoon1",
-    "welcome.greetings.afternoon2",
-    "welcome.greetings.afternoon3",
-  ],
-  evening: [
-    "welcome.greetings.evening1",
-    "welcome.greetings.evening2",
-    "welcome.greetings.evening3",
-  ],
-  night: [
-    "welcome.greetings.night1",
-    "welcome.greetings.night2",
-    "welcome.greetings.night3",
-  ],
-} as const;
-
 const QUICK_ACTIONS = [
   {
     titleKey: "welcome.examples.valuationCheck",
@@ -217,48 +194,53 @@ const QUICK_ACTIONS = [
   },
 ] as const;
 
-function pickGreetingKey(): string {
-  const hour = new Date().getHours();
-  const bucket =
-    hour >= 5 && hour < 12
-      ? "morning"
-      : hour >= 12 && hour < 17
-        ? "afternoon"
-        : hour >= 17 && hour < 22
-          ? "evening"
-          : "night";
-  const variants = GREETING_KEYS[bucket];
-  return variants[Math.floor(Math.random() * variants.length)] ?? variants[0];
-}
-
 interface Props {
   onExample: (s: string) => void;
 }
 
 export function WelcomeScreen({ onExample }: Props) {
   const { t } = useTranslation();
-  const [greetingKey] = useState(() => pickGreetingKey());
   const [isExamplesOpen, setIsExamplesOpen] = useState(false);
   const [activeCategory, setActiveCategory] = useState(0);
   const examplesTriggerRef = useRef<HTMLButtonElement>(null);
 
   return (
-    <div className="flex w-full flex-col items-center px-4 pb-14 text-center">
-      <div className="w-full max-w-3xl">
-        <div className="mx-auto max-w-2xl">
-          <div className="flex items-center justify-center gap-3">
-            <BrandMark className="h-9 w-9 shrink-0" />
-            <h1 className="font-serif text-[34px] font-normal leading-tight sm:text-[40px]">
-              {t(greetingKey as any)}
+    <div className="studio-welcome">
+      <div className="studio-welcome-inner">
+        <div className="studio-welcome-intro">
+          <div className="studio-welcome-copy">
+            <div className="studio-eyebrow">
+              <BrandMark className="h-5 w-5 shrink-0" />
+              <span>{t("welcome.studioEyebrow" as never, { defaultValue: "ROOM FOR A CLEARER VIEW" })}</span>
+            </div>
+            <h1 className="studio-welcome-title">
+              <span>{t("welcome.studioTitleFirst" as never, { defaultValue: "Every idea deserves" })}</span>{" "}
+              <span>{t("welcome.studioTitleSecond" as never, { defaultValue: "a clearer view." })}</span>
             </h1>
+            <p className="studio-welcome-description">{t("welcome.taskSubtitle" as any)}</p>
           </div>
-          <p className="mt-3 text-sm text-muted-foreground">
-            {t("welcome.taskSubtitle" as any)}
-          </p>
+          <div className="studio-research-orbit" aria-hidden="true">
+            <svg viewBox="0 0 240 240" fill="none" role="presentation">
+              <circle cx="120" cy="120" r="101" className="orbit-ring" />
+              <circle cx="120" cy="120" r="73" className="orbit-ring orbit-ring-inner" />
+              <path d="M19 120H221M120 19V221" className="orbit-axis" />
+              <path d="M43 159C62 171 67 118 87 130S110 154 127 109S159 124 170 85S192 71 207 63" className="orbit-trace" />
+              <path d="M36 181C66 173 78 181 101 162S148 168 168 144S196 154 214 136" className="orbit-secondary" />
+              <circle cx="127" cy="109" r="16" className="orbit-halo" />
+              <circle cx="127" cy="109" r="4" className="orbit-dot" />
+              <circle cx="207" cy="63" r="3" className="orbit-dot orbit-dot-small" />
+              <path d="M115 24H125M216 115V125M115 216H125M24 115V125" className="orbit-tick" />
+            </svg>
+            <span>{t("welcome.studioTraceCaption" as never, { defaultValue: "Question · Research · Verify" })}</span>
+          </div>
         </div>
 
+        <div className="studio-start-heading">
+          <span>{t("welcome.studioPromptLabel" as never, { defaultValue: "A place to begin" })}</span>
+          <span className="studio-start-rule" aria-hidden="true" />
+        </div>
         <div
-          className="mt-8 flex flex-wrap justify-center gap-2"
+          className="studio-quick-actions"
           role="group"
           aria-label={t("welcome.quickActions" as any)}
         >
@@ -267,14 +249,12 @@ export function WelcomeScreen({ onExample }: Props) {
               key={action.titleKey}
               type="button"
               onClick={() => onExample(t(action.promptKey as any))}
-              className={
-                index === 0
-                  ? "inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/[0.08] px-4 py-2 text-sm text-primary transition-colors hover:border-primary/50 hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-                  : "inline-flex items-center gap-2 rounded-full border border-border/60 bg-card px-4 py-2 text-sm transition-colors hover:border-primary/40 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-              }
+              className="studio-quick-action focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
             >
-              {action.icon}
-              <span>{t(action.titleKey as any)}</span>
+              <span className="studio-quick-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+              <span className="studio-quick-icon" aria-hidden="true">{action.icon}</span>
+              <span className="studio-quick-label">{t(action.titleKey as any)}</span>
+              <ArrowUpRight className="studio-quick-arrow h-4 w-4" aria-hidden="true" />
             </button>
           ))}
         </div>
@@ -285,7 +265,7 @@ export function WelcomeScreen({ onExample }: Props) {
           aria-expanded={isExamplesOpen}
           aria-controls="welcome-example-library"
           onClick={() => setIsExamplesOpen((open) => !open)}
-          className="mt-10 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="studio-examples-trigger inline-flex items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           <span>{t("welcome.browseAllExamples" as any)}</span>
           <ChevronDown
@@ -304,7 +284,7 @@ export function WelcomeScreen({ onExample }: Props) {
             setIsExamplesOpen(false);
             examplesTriggerRef.current?.focus();
           }}
-          className={`grid text-left transition-[grid-template-rows,opacity] duration-300 ease-out ${
+          className={`studio-example-library grid text-left transition-[grid-template-rows,opacity] duration-300 ease-out ${
             isExamplesOpen
               ? "grid-rows-[1fr] opacity-100"
               : "grid-rows-[0fr] opacity-0"
@@ -316,7 +296,7 @@ export function WelcomeScreen({ onExample }: Props) {
                 an unstructured wall — categories have uneven card counts. */}
             <div className="pt-6">
               <div
-                className="flex flex-wrap justify-center gap-1.5"
+                className="studio-example-tabs flex flex-wrap gap-1.5"
                 role="tablist"
                 aria-label={t("welcome.browseAllExamples" as any)}
               >
@@ -330,8 +310,8 @@ export function WelcomeScreen({ onExample }: Props) {
                     onClick={() => setActiveCategory(index)}
                     className={
                       index === activeCategory
-                        ? "inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary"
-                        : "inline-flex items-center gap-1.5 rounded-full border border-transparent px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-border/60 hover:text-foreground"
+                        ? "studio-example-tab studio-example-tab-selected inline-flex items-center gap-1.5 border-b border-primary/70 px-3 py-2 text-xs font-medium text-primary"
+                        : "studio-example-tab inline-flex items-center gap-1.5 border-b border-transparent px-3 py-2 text-xs text-muted-foreground transition-colors hover:border-border/60 hover:text-foreground"
                     }
                   >
                     {cat.icon}
@@ -346,7 +326,7 @@ export function WelcomeScreen({ onExample }: Props) {
                     type="button"
                     tabIndex={isExamplesOpen ? 0 : -1}
                     onClick={() => onExample(t(ex.promptKey as any))}
-                    className="block w-full rounded-xl border border-border/60 px-3 py-2.5 text-left transition-colors hover:border-primary/40 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                    className="studio-example-entry block w-full border-b border-border/60 px-3 py-3 text-left transition-colors hover:border-primary/40 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
                   >
                     <span className="text-sm font-medium leading-snug text-foreground">
                       {t(ex.titleKey as any)}

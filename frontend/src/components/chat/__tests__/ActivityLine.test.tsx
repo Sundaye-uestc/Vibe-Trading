@@ -12,6 +12,7 @@ vi.mock("react-i18next", () => ({
         "agent.activity.verbs.runningBacktest": "Running the backtest",
         "agent.activity.verbs.validatingNumbers": "Double-checking the numbers",
         "agent.activity.done": "Done",
+        "agent.activity.partial": "Partial result",
         "agent.activity.failed": "Failed",
         "agent.activity.stopped": "Stopped by you",
         "agent.activity.continue": "Continue",
@@ -57,6 +58,18 @@ describe("ActivityLine", () => {
     expect(screen.getByText(
       "Running the backtest · Run the backtest · 5s · 1 steps",
     )).toBeInTheDocument();
+  });
+
+  it("shows a partial result with an amber warning instead of a success check", () => {
+    render(<ActivityLine activity={makeActivity({
+      state: "partial",
+      endedAt: 10_000,
+    })} />);
+    expect(screen.getByText("Partial result · 1 steps · 5s")).toBeInTheDocument();
+    const summary = screen.getByRole("button", { name: "Partial result · 1 steps · 5s" });
+    expect(summary.querySelector(".text-success")).toBeNull();
+    expect(summary.querySelector(".text-amber-600")).not.toBeNull();
+    expect(summary.querySelector(".animate-spin")).toBeNull();
   });
 
   it("ticks only while the page is visible and freezes at endedAt", () => {

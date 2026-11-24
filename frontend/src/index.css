@@ -4,81 +4,79 @@
 
 @layer base {
   :root {
-    /* Light mode surfaces */
-    --background: 220 20% 98%;
-    --foreground: 220 20% 10%;
-    --card: 0 0% 100%;
-    --card-foreground: 220 20% 10%;
-
-    /* Popover: a slightly elevated surface used for floating menus,
-       tooltips, and the language switcher dropdown. Falls back to a
-       solid white (light) or surface-1 (dark) so dropdowns never
-       appear transparent and let underlying content bleed through. */
-    --popover: 0 0% 100%;
-    --popover-foreground: 220 20% 10%;
-
-    /* Brand accent */
-    --primary: 27 90% 52%;
-    --primary-foreground: 0 0% 100%;
-
-    --muted: 220 14% 92%;
-    --muted-foreground: 220 14% 46%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 220 14% 87%;
-    --radius: 0.5rem;
-
-    /* Semantic colors */
-    --success: 142 71% 45%;
-    --danger: 0 84% 60%;
-    --warning: 38 92% 50%;
-    --info: 217 91% 60%;
-
-    /* Chart tokens */
-    --chart-grid: 220 14% 90%;
-    --chart-text: 220 14% 46%;
-    --chart-axis: 220 14% 80%;
-    --chart-compare-a: #3b82f6;
-    --chart-compare-b: #f59e0b;
+    color-scheme: light;
+    --background: 38 33% 97%;
+    --foreground: 155 12% 18%;
+    --card: 40 35% 99%;
+    --card-foreground: 155 12% 18%;
+    --popover: 38 25% 97%;
+    --popover-foreground: 155 12% 18%;
+    --primary: 22 55% 40%;
+    --primary-foreground: 22 40% 13%;
+    --muted: 138 12% 93%;
+    --muted-foreground: 150 6% 43%;
+    --destructive: 7 53% 43%;
+    --destructive-foreground: 35 30% 97%;
+    --border: 120 7% 82%;
+    --radius: 0.75rem;
+    --success: 145 35% 35%;
+    --danger: 7 53% 43%;
+    --warning: 37 62% 37%;
+    --info: 204 35% 40%;
+    --chart-grid: 138 10% 87%;
+    --chart-text: 150 6% 43%;
+    --chart-axis: 138 9% 77%;
+    --chart-compare-a: #668ca1;
+    --chart-compare-b: #c38357;
+    --studio-surface: hsl(40 30% 99% / .66);
+    --studio-line: hsl(145 15% 20% / .12);
+    --studio-shadow: 0 16px 50px -26px hsl(145 15% 20% / .25), inset 0 1px 0 hsl(0 0% 100% / .7);
+    --studio-action: #ec9260;
   }
 
   .dark {
-    /* Dark mode: 4-level surface system. Keep >=5 lightness points between
-       adjacent surfaces — smaller deltas are indistinguishable on most
-       panels (sidebar vs main blended at 5%/8%). */
-    --background: 220 20% 5%;       /* bg-base */
-    --foreground: 220 10% 93%;
-    --card: 220 18% 10%;            /* surface-1 */
-    --card-foreground: 220 10% 93%;
-
-    --popover: 220 18% 12%;         /* surface-1.5 (slightly lighter than card) */
-    --popover-foreground: 220 10% 93%;
-
-    --primary: 27 90% 52%;
-    --primary-foreground: 0 0% 100%;
-
-    --muted: 220 16% 16%;           /* surface-2 */
-    --muted-foreground: 220 10% 64%;
-    --destructive: 0 62% 50%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 220 14% 24%;          /* surface-3 */
-
-    /* Semantic colors */
-    --success: 142 71% 45%;
-    --danger: 0 62% 50%;
-    --warning: 38 92% 50%;
-    --info: 217 91% 60%;
-
-    /* Chart tokens */
-    --chart-grid: 220 20% 14%;
-    --chart-text: 220 10% 55%;
-    --chart-axis: 220 20% 26%;
-    --chart-compare-a: #60a5fa;
-    --chart-compare-b: #fbbf24;
+    color-scheme: dark;
+    --background: 220 12% 10%;
+    --foreground: 40 32% 95%;
+    --card: 220 9% 14%;
+    --card-foreground: 40 32% 95%;
+    --popover: 220 8% 15%;
+    --popover-foreground: 40 32% 95%;
+    --primary: 22 83% 72%;
+    --primary-foreground: 22 40% 13%;
+    --muted: 210 6% 20%;
+    --muted-foreground: 40 6% 65%;
+    --destructive: 6 77% 75%;
+    --destructive-foreground: 5 35% 13%;
+    --border: 40 7% 28%;
+    --success: 138 46% 70%;
+    --danger: 6 77% 75%;
+    --warning: 42 70% 69%;
+    --info: 204 46% 74%;
+    --chart-grid: 210 6% 23%;
+    --chart-text: 40 6% 65%;
+    --chart-axis: 210 6% 32%;
+    --chart-compare-a: #9fc3dc;
+    --chart-compare-b: #f3a87b;
+    --studio-surface: hsl(220 8% 15% / .57);
+    --studio-line: hsl(40 20% 95% / .12);
+    --studio-shadow: 0 18px 55px -28px hsl(0 0% 0% / .6), inset 0 1px 0 hsl(40 30% 100% / .08);
   }
 
   * { @apply border-border; }
-  body { @apply bg-background text-foreground; }
+  html, body, #root { min-height: 100%; }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-size: 14px;
+    line-height: 1.6;
+    font-variant-numeric: tabular-nums;
+  }
+  button, input, select, textarea { font: inherit; }
+  button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
+  :focus-visible { outline: 2px solid hsl(var(--primary) / .85); outline-offset: 4px; }
+  ::selection { background: hsl(var(--primary) / .24); color: hsl(var(--foreground)); }
+  input, textarea { caret-color: hsl(var(--primary)); }
+  option { background: hsl(var(--popover)); color: hsl(var(--popover-foreground)); }
 
   /* Prose table enhancements */
   .prose table { border-collapse: collapse; width: 100%; }

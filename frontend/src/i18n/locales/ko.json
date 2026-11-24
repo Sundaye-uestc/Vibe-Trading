@@ -61,13 +61,18 @@
     "storageReclaimed": "Freed space by clearing a previously stored image",
     "changeBackground": "Change Background",
     "applyBackground": "Apply Background",
-    "removeBackground": "Remove Background",
+    "removeBackground": "기본 장면 복원",
     "backgroundSizeHint": "Upload an image as app background (max 5MB)",
     "backgroundApplied": "Background applied",
-    "backgroundRemoved": "Background removed",
+    "backgroundRemoved": "기본 장면을 복원했습니다",
     "dragToCrop": "Drag to adjust crop area",
     "avatarPreview": "Preview",
-    "paperTrading": "모의 거래"
+    "paperTrading": "모의 거래",
+    "workspaceGroup": "작업 공간",
+    "researchGroup": "연구 도구",
+    "openNavigation": "탐색 열기",
+    "closeNavigation": "탐색 닫기",
+    "sessionActionFailed": "작업을 완료하지 못했습니다. 다시 시도하세요."
   },
   "runtime": {
     "monitorBadge": "거래 모니터",
@@ -385,7 +390,12 @@
       "shadowBacktest": "Shadow Account Backtest",
       "memory": "Persistent Memory",
       "sessionSearch": "Session Search"
-    }
+    },
+    "studioEyebrow": "더 선명한 생각을 위한 여유",
+    "studioTitleFirst": "모든 아이디어에,",
+    "studioTitleSecond": "탄탄한 근거를.",
+    "studioPromptLabel": "하나의 질문에서 시작",
+    "studioTraceCaption": "질문 · 연구 · 검증"
   },
   "settings": {
     "title": "설정",
@@ -697,6 +707,7 @@
         "working": "처리 중"
       },
       "done": "완료",
+      "partial": "일부 완료",
       "stopped": "사용자가 중지함",
       "timeout": "{{elapsed}} 후 대기를 중단했습니다 — 실행은 아직 마무리 중일 수 있습니다",
       "failed": "실패",
@@ -1283,6 +1294,10 @@
     "daysHours": "{{d}}d{{h}}h"
   },
   "swarmStatus": {
+    "teamDraft": "팀 초안 보기",
+    "draftSource": "팀이 작성한 조사 초안입니다. 주 에이전트의 검토 결과는 대화 응답에 표시됩니다.",
+    "retryDraft": "초안을 불러오지 못했습니다. 다시 시도",
+    "noDraft": "저장된 초안이 없습니다.",
     "agents": "{{done}}/{{total}} 에이전트",
     "layer": "{{total}}개 라운드 중 {{current}}번째",
     "agent": "에이전트",
@@ -1328,6 +1343,7 @@
   },
   "messageBubble": {
     "elapsedTime": "총 응답 시간",
+    "partialResultHint": "이 응답에는 일부 결과만 포함되어 있습니다.",
     "copied": "복사됨",
     "copy": "복사",
     "copyFailed": "복사하지 못했습니다. 텍스트를 선택한 뒤 Ctrl+C를 누르세요.",
@@ -1374,6 +1390,8 @@
     "somethingWrong": "문제가 발생했습니다. 계속하려면 페이지를 새로고침하세요."
   },
   "toolProgress": {
+    "noData": "데이터 없음",
+    "needsResolution": "종목 확인 필요",
     "step": "단계 {{step}} · {{tool}}",
     "toolsRunning": "{{count}}개 작업을 동시에 처리 중",
     "toolsCompleted": "{{count}}단계 완료",
@@ -1869,6 +1887,10 @@
     "dataMissingCount": "누락 날짜 수",
     "dataSettlementHint": "데이터 범위가 정산을 보장하지 않습니다. 계좌 시작일, 장 마감 시간, 데이터 검사 및 주문 규칙을 충족해야 합니다.",
     "dataJob_data_not_ready": "원본의 일봉 데이터가 아직 완전하지 않습니다. 기존 데이터는 유지됩니다. 나중에 수동으로 업데이트하세요.",
-    "dataOutcomeUnknown": "업데이트 결과가 불확실합니다. 다시 시도하기 전에 상태를 새로고침하여 게시된 데이터를 확인하세요."
+    "dataOutcomeUnknown": "업데이트 결과가 불확실합니다. 다시 시도하기 전에 상태를 새로고침하여 게시된 데이터를 확인하세요.",
+    "studioEyebrow": "전략을 시험하는 공간",
+    "studioOverview": "계좌 개요",
+    "studioPositions": "보유 종목 수",
+    "studioLedgerDate": "원장 기준일"
   }
 }

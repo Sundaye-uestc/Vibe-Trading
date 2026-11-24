@@ -1,6 +1,6 @@
 import i18n from '@/i18n';
-import { Component, memo, useState, useEffect, useCallback, type ReactNode } from "react";
-import { User, XCircle, RefreshCw, Copy, Check, Paperclip, Users, Target, Clock3, Minimize2 } from "lucide-react";
+import { Component, memo, useState, useEffect, useCallback, useRef, type ReactNode } from "react";
+import { User, XCircle, RefreshCw, Copy, Check, Paperclip, Users, Target, Clock3, Minimize2, AlertTriangle } from "lucide-react";
 import ReactMarkdown, { type Options as ReactMarkdownOptions } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -36,7 +36,7 @@ const markdownComponents: ReactMarkdownOptions["components"] = {
     return <a {...props} target="_blank" rel="noopener noreferrer" />;
   },
 };
-const proseClassName = "prose prose-sm dark:prose-invert max-w-none text-[15px] leading-relaxed prose-p:font-serif prose-p:text-[15.5px] prose-p:leading-[1.75] prose-li:font-serif prose-li:text-[15.5px] prose-li:leading-[1.75] prose-headings:font-sans prose-table:font-sans prose-code:font-mono prose-blockquote:font-sans [&_blockquote_p]:font-sans prose-table:border prose-table:border-border/50 prose-th:bg-muted/30 prose-th:px-3 prose-th:py-1.5 prose-td:px-3 prose-td:py-1.5 prose-th:text-left prose-th:text-xs prose-th:font-medium prose-td:text-xs prose-hr:hidden";
+const proseClassName = "studio-prose prose prose-sm dark:prose-invert max-w-none text-[15px] leading-[1.85] prose-p:font-sans prose-p:text-[15px] prose-p:leading-[1.85] prose-li:font-sans prose-li:text-[15px] prose-li:leading-[1.85] prose-headings:font-sans prose-table:font-sans prose-code:font-mono prose-blockquote:font-sans [&_blockquote_p]:font-sans prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-th:text-start prose-th:text-xs prose-th:font-medium prose-td:text-xs";
 
 interface MarkdownErrorBoundaryProps {
   content: string;
@@ -134,10 +134,21 @@ async function copyText(text: string): Promise<boolean> {
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+    };
+  }, []);
   const handleCopy = useCallback(async () => {
     if (await copyText(text)) {
+      if (!mounted.current) return;
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+      resetTimer.current = setTimeout(() => setCopied(false), 1500);
       return;
     }
     toast.error(i18n.t("messageBubble.copyFailed"));
@@ -147,7 +158,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="absolute top-2 right-2 p-1.5 rounded-md bg-muted/80 hover:bg-muted text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+      className="studio-copy-button absolute top-0 end-0 rounded-lg text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
       aria-label={label}
       title={label}
     >
@@ -239,8 +250,8 @@ export const MessageBubble = memo(function MessageBubble({ msg, onRetry }: Props
       ?? (meta?.attachment ? [meta.attachment] : []);
     const ts = msg.timestamp ? formatTimestamp(msg.timestamp) : null;
     return (
-      <div className="flex justify-end group">
-        <div className="max-w-[72%] max-h-[40vh] overflow-y-auto break-words rounded-[18px] bg-muted px-4 py-3 text-[15px] text-foreground leading-relaxed whitespace-pre-wrap">
+      <div className="studio-user-message flex justify-end gap-3 group">
+        <div className="studio-user-bubble max-w-[78%] max-h-[40vh] overflow-y-auto break-words rounded-[18px] bg-muted px-4 py-3 text-[15px] text-foreground leading-relaxed whitespace-pre-wrap">
           {meta && (attachments.length > 0 || meta.swarmMode || meta.goalMode) && (
             <div className="mb-1.5 flex flex-wrap justify-end gap-1.5 text-[10px] leading-none text-muted-foreground">
               {attachments.map((attachment, index) => (
@@ -269,7 +280,7 @@ export const MessageBubble = memo(function MessageBubble({ msg, onRetry }: Props
             </div>
           )}
           {msg.content}
-          {ts && <span className="block text-[9px] opacity-50 text-right mt-1">{ts}</span>}
+          {ts && <span className="studio-message-time block text-[11px] text-muted-foreground text-end mt-2">{ts}</span>}
         </div>
         <UserAvatar />
       </div>
@@ -278,13 +289,19 @@ export const MessageBubble = memo(function MessageBubble({ msg, onRetry }: Props
 
   if (msg.type === "answer") {
     return (
-      <div className="flex gap-3 group relative">
+      <div className="studio-answer flex gap-3 group relative">
         <AgentAvatar />
         <div className="flex-1 min-w-0 space-y-1.5">
           <CopyButton text={msg.content} />
+          {msg.degraded && (
+            <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <p><span className="font-medium">{i18n.t("agent.activity.partial" as never)}</span>{" · "}{i18n.t("messageBubble.partialResultHint" as never)}</p>
+            </div>
+          )}
           <MarkdownContent content={msg.content} />
           {msg.elapsed_ms != null && (
-            <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground/55">
+            <div className="studio-answer-meta mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
               <span className="inline-flex items-center gap-1 tabular-nums" title={i18n.t("messageBubble.elapsedTime")}>
                 <Clock3 className="h-3 w-3" aria-hidden="true" />
                 {formatElapsed(msg.elapsed_ms)}
@@ -302,7 +319,7 @@ export const MessageBubble = memo(function MessageBubble({ msg, onRetry }: Props
 
   if (msg.type === "compact") {
     return (
-      <div className="flex items-center gap-3" role="separator">
+      <div className="studio-compaction-divider flex items-center gap-3" role="separator">
         <span className="h-px flex-1 bg-border/70" />
         <details className="group shrink-0">
           <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-full border border-border/70 bg-muted/35 px-2.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">

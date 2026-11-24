@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, type JSX } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Loader2, CheckCircle2, CircleHelp, XCircle } from "lucide-react";
 import { ProgressBar } from "@/components/chat/ProgressBar";
 import { localizeToolName } from "@/lib/tools";
 import type { ToolCallEntry } from "@/types/agent";
@@ -51,7 +51,7 @@ function formatStepElapsed(seconds: number): string {
  */
 const DETAIL_ARG_KEYS = [
   "name", "skill", "skill_name", "factor", "factor_id", "alpha_id",
-  "symbol", "symbols", "code", "query", "q", "keyword", "action",
+  "symbol", "symbols", "code", "codes", "query", "q", "keyword", "action",
   "path", "file", "filename", "url", "source", "id",
 ];
 
@@ -139,7 +139,11 @@ function ToolRow({ entries, eta }: RowProps): JSX.Element {
     if (value != null) elapsedSeconds = (elapsedSeconds ?? 0) + value;
   }
 
-  const icon = entry.status === "error"
+  const needsResolution = entry.status === "needs_resolution";
+  const noData = entry.status === "no_data";
+  const icon = needsResolution || noData
+    ? <CircleHelp className="h-3 w-3 text-amber-600 dark:text-amber-400 shrink-0" aria-hidden="true" />
+    : entry.status === "error"
     ? <XCircle className="h-3 w-3 text-danger shrink-0" />
     : entry.status === "ok"
       ? <CheckCircle2 className="h-3 w-3 text-success shrink-0" />
@@ -162,6 +166,9 @@ function ToolRow({ entries, eta }: RowProps): JSX.Element {
             <span className="text-muted-foreground"> ×{entries.length}</span>
           )}
         </span>
+        {(needsResolution || noData) && (
+          <span className="shrink-0 text-amber-700 dark:text-amber-400">{t((noData ? "toolProgress.noData" : "toolProgress.needsResolution") as never)}</span>
+        )}
         {detailText && (
           <span className="min-w-0 truncate text-muted-foreground/80">{detailText}</span>
         )}

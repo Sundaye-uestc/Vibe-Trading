@@ -1,6 +1,7 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { X, Upload, Trash2 } from "lucide-react";
+import { Upload, Trash2 } from "lucide-react";
+import { DialogSurface } from "@/components/common/DialogSurface";
 import { getStoredBackground } from "@/hooks/useBackground";
 import {
   backgroundResizeTarget,
@@ -22,6 +23,7 @@ export function BackgroundSelector({ open, onClose, onSave }: Props) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (open) { setImageDataUrl(getStoredBackground()); setError(""); } }, [open]);
 
   const messageFor = (code: ImageResizeErrorCode): string => {
     switch (code) {
@@ -89,19 +91,8 @@ export function BackgroundSelector({ open, onClose, onSave }: Props) {
   const hasExisting = !!imageDataUrl;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div
-        className="relative z-10 bg-card border rounded-2xl shadow-xl w-[360px] max-w-[95vw] p-6 space-y-5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">{t("layout.changeBackground")}</h3>
-          <button onClick={onClose} className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
+    <DialogSurface open={open} title={t("layout.changeBackground")} closeLabel={t("layout.cancel")} onClose={onClose}>
+      <div className="space-y-5">
         {imageDataUrl && (
           <div
             className="w-full h-32 rounded-lg bg-cover bg-center border"
@@ -144,6 +135,6 @@ export function BackgroundSelector({ open, onClose, onSave }: Props) {
           </button>
         </div>
       </div>
-    </div>
+    </DialogSurface>
   );
 }

@@ -1,45 +1,31 @@
 import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Link, Outlet, useLocation, useSearchParams } from "react-router";
-import { Activity, BarChart3, Bot, CalendarClock, CandlestickChart, Check, ChevronDown, FileText, FlaskConical, Languages, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2, WalletCards, Package, Image } from "lucide-react";
+import { Activity, BarChart3, Bot, CalendarClock, CandlestickChart, Check, ChevronDown, FileText, FlaskConical, Languages, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2, WalletCards, Package, Image, Menu, X, UserRound, ArrowUpRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { api, type SessionItem } from "@/lib/api";
 import { safeGet, safeSet } from "@/lib/storage";
 import { useAgentStore } from "@/stores/agent";
 import { BrandMark } from "@/components/common/BrandMark";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
+import { DialogSurface } from "@/components/common/DialogSurface";
 import { ConnectionBanner } from "@/components/layout/ConnectionBanner";
 import { SUPPORTED_LANGUAGES } from "@/i18n";
 import { AvatarSelector } from "@/components/chat/AvatarSelector";
 import { BackgroundSelector } from "@/components/layout/BackgroundSelector";
 import { getStoredBackground, saveBackground } from "@/hooks/useBackground";
 import { toast } from "sonner";
-
-// APP_VERSION is sourced from i18n locale files (app.version key) to keep a
-// single source of truth across the footer and every localised README.
+import "@/styles/shell.css";
 
 const MIN_SIDEBAR = 48;
 const MAX_SIDEBAR = 500;
 const COLLAPSE_THRESHOLD = 100;
+const DEFAULT_SIDEBAR = 232;
 
 export function Layout() {
-  const { t } = useTranslation();
-
-  // "/" is the product (chat); marketing moved to /about. The Agent entry
-  // matches both "/" and legacy "/agent" deep links.
-  const NAV = [
-    { to: "/", icon: Bot, label: t('layout.agent') },
-    { to: "/runtime", icon: Activity, label: t('layout.runtime') },
-    { to: "/scheduled", icon: CalendarClock, label: t('layout.scheduled') },
-    { to: "/reports", icon: FileText, label: t('layout.reports') },
-    { to: "/portfolio", icon: WalletCards, label: t('layout.portfolio') },
-    { to: "/paper-trading", icon: FlaskConical, label: t('layout.paperTrading') },
-    { to: "/skills", icon: Package, label: t('layout.skills') },
-    { to: "/alpha-zoo", icon: Layers, label: t('layout.alphaZoo') },
-    { to: "/options", icon: CandlestickChart, label: t('layout.optionsLab') },
-    { to: "/settings", icon: Settings, label: t('layout.settings') },
-    { to: "/correlation", icon: BarChart3, label: t('layout.correlation') },
-  ];
+  const { t, i18n } = useTranslation();
+  const zh = i18n.language.startsWith("zh");
   const { pathname } = useLocation();
   const [searchParams] = useSearchParams();
   const { dark, toggle } = useDarkMode();
@@ -47,464 +33,261 @@ export function Layout() {
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const sseStatus = useAgentStore(s => s.sseStatus);
   const sseRetryAttempt = useAgentStore(s => s.sseRetryAttempt);
-
-  /* ---- Sidebar resize ---- */
+  const streamingSessionId = useAgentStore(s => s.streamingSessionId);
+  const activeSessionId = searchParams.get("session");
   const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const saved = safeGet("qa-sidebar-width");
-    if (saved) {
-      const n = parseInt(saved, 10);
-      if (!isNaN(n) && n >= MIN_SIDEBAR && n <= MAX_SIDEBAR) return n;
-    }
-    return 256;
+    const value = parseInt(safeGet("qa-sidebar-width") ?? "", 10);
+    return Number.isFinite(value) && value >= MIN_SIDEBAR && value <= MAX_SIDEBAR ? value : DEFAULT_SIDEBAR;
   });
   const [expandedWidth, setExpandedWidth] = useState(() => {
-    const saved = safeGet("qa-sidebar-expanded-width");
-    if (saved) {
-      const n = parseInt(saved, 10);
-      if (!isNaN(n) && n >= COLLAPSE_THRESHOLD && n <= MAX_SIDEBAR) return n;
-    }
-    return 256;
+    const value = parseInt(safeGet("qa-sidebar-expanded-width") ?? "", 10);
+    return Number.isFinite(value) && value >= COLLAPSE_THRESHOLD && value <= MAX_SIDEBAR ? value : DEFAULT_SIDEBAR;
   });
-
-  const collapsed = sidebarWidth < COLLAPSE_THRESHOLD;
-  const isResizingRef = useRef(false);
-  const startXRef = useRef(0);
-  const startWidthRef = useRef(0);
-
-  const persistWidth = useCallback((w: number) => {
-    safeSet("qa-sidebar-width", String(w));
-    if (w >= COLLAPSE_THRESHOLD) {
-      safeSet("qa-sidebar-expanded-width", String(w));
-      setExpandedWidth(w);
-    }
-  }, []);
-
-  const toggleCollapse = useCallback(() => {
-    if (collapsed) {
-      setSidebarWidth(expandedWidth);
-      persistWidth(expandedWidth);
-    } else {
-      setSidebarWidth(48);
-      safeSet("qa-sidebar-width", "48");
-    }
-  }, [collapsed, expandedWidth, persistWidth]);
-
-  /* Mouse resize handlers */
-  const onResizeMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    isResizingRef.current = true;
-    startXRef.current = e.clientX;
-    startWidthRef.current = sidebarWidth;
-    document.body.classList.add("sidebar-resizing");
-
-    const onMouseMove = (ev: MouseEvent) => {
-      if (!isResizingRef.current) return;
-      const delta = ev.clientX - startXRef.current;
-      const next = Math.max(MIN_SIDEBAR, Math.min(MAX_SIDEBAR, startWidthRef.current + delta));
-      setSidebarWidth(next);
-    };
-
-    const onMouseUp = () => {
-      isResizingRef.current = false;
-      document.body.classList.remove("sidebar-resizing");
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      const el = document.querySelector<HTMLElement>("[data-sidebar]");
-      if (el) {
-        const finalW = el.offsetWidth;
-        persistWidth(finalW);
-      }
-    };
-
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, [sidebarWidth, persistWidth]);
-
-  /* Persist width on change */
-  useEffect(() => {
-    safeSet("qa-sidebar-width", String(sidebarWidth));
-  }, [sidebarWidth]);
-
-  /* Adopt a width changed in another tab, mirroring the storage event. */
-  useEffect(() => {
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== "qa-sidebar-width") return;
-      const next = parseInt(safeGet("qa-sidebar-width") ?? "", 10);
-      if (!isNaN(next) && next >= MIN_SIDEBAR && next <= MAX_SIDEBAR) {
-        setSidebarWidth(next);
-      }
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
-
-  /* ---- Sessions ---- */
-  const activeSessionId = searchParams.get("session");
-  const streamingSessionId = useAgentStore(s => s.streamingSessionId);
-
-  const loadSessions = () => {
-    api.listSessions()
-      .then((list) => setSessions(Array.isArray(list) ? list : []))
-      .catch(() => {})
-      .finally(() => setSessionsLoading(false));
-  };
-
-  const isAgentPage = pathname.startsWith("/agent");
-  useEffect(() => { loadSessions(); }, [isAgentPage, activeSessionId]);
-
-  // Re-list after out-of-band title changes (e.g. LLM auto-titling on the
-  // first completed exchange).
-  useEffect(() => {
-    const refresh = () => loadSessions();
-    window.addEventListener("vibe:sessions-refresh", refresh);
-    return () => window.removeEventListener("vibe:sessions-refresh", refresh);
-  }, []);
-
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [renameTarget, setRenameTarget] = useState<string | null>(null);
+  const [mobile, setMobile] = useState(() => window.matchMedia("(max-width: 767px)").matches);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLButtonElement>(null);
+  const closeMenuRef = useRef<HTMLButtonElement>(null);
+  const resizeCleanup = useRef<(() => void) | null>(null);
+  const sessionGeneration = useRef(0);
+  const collapsed = !mobile && sidebarWidth < COLLAPSE_THRESHOLD;
+  const [deleteTarget, setDeleteTarget] = useState<SessionItem | null>(null);
+  const [renameTarget, setRenameTarget] = useState<SessionItem | null>(null);
   const [renameValue, setRenameValue] = useState("");
-
-  const deleteSession = async (sid: string) => {
-    try {
-      await api.deleteSession(sid);
-      setSessions((prev) => prev.filter((s) => s.session_id !== sid));
-    } catch { /* ignore */ }
-    setDeleteTarget(null);
-  };
-
-  const renameSession = async (sid: string) => {
-    if (!renameValue.trim()) { setRenameTarget(null); return; }
-    try {
-      await api.renameSession(sid, renameValue.trim());
-      setSessions((prev) => prev.map((s) => s.session_id === sid ? { ...s, title: renameValue.trim() } : s));
-    } catch { /* ignore */ }
-    setRenameTarget(null);
-  };
-
-  /* ---- Background ---- */
-  const [bg, setBg] = useState<string | null>(getStoredBackground);
-
-  const handleBgSave = (dataUrl: string | null): boolean => {
-    // Persist first: the background is rendered from the stored value, so
-    // applying an unstorable one would show it until the next reload and then
-    // silently lose it.
-    if (!saveBackground(dataUrl)) {
-      toast.error(t("layout.imageSaveFailed"));
-      return false;
-    }
-    setBg(dataUrl);
-    if (dataUrl) {
-      toast.success(t("layout.backgroundApplied"));
-    } else {
-      toast.success(t("layout.backgroundRemoved"));
-    }
-    return true;
-  };
-
-  /* ---- Dialogs ---- */
+  const [mutationBusy, setMutationBusy] = useState(false);
   const [avatarDialogOpen, setAvatarDialogOpen] = useState(false);
   const [bgDialogOpen, setBgDialogOpen] = useState(false);
+  const [bg, setBg] = useState<string | null>(getStoredBackground);
+  const overlayOpen = mobileOpen || avatarDialogOpen || bgDialogOpen || Boolean(deleteTarget) || Boolean(renameTarget);
+  const groups = [
+    { label: t("layout.workspaceGroup", { defaultValue: zh ? "工作空间" : "WORKSPACE" }), items: [
+      { to: "/", icon: Bot, label: t("layout.agent") },
+      { to: "/portfolio", icon: WalletCards, label: t("layout.portfolio") },
+      { to: "/paper-trading", icon: FlaskConical, label: t("layout.paperTrading") },
+      { to: "/reports", icon: FileText, label: t("layout.reports") },
+      { to: "/scheduled", icon: CalendarClock, label: t("layout.scheduled") },
+      { to: "/runtime", icon: Activity, label: t("layout.runtime") },
+    ] },
+    { label: t("layout.researchGroup", { defaultValue: zh ? "研究工具" : "RESEARCH TOOLS" }), items: [
+      { to: "/alpha-zoo", icon: Layers, label: t("layout.alphaZoo") },
+      { to: "/options", icon: CandlestickChart, label: t("layout.optionsLab") },
+      { to: "/correlation", icon: BarChart3, label: t("layout.correlation") },
+      { to: "/skills", icon: Package, label: t("layout.skills") },
+    ] },
+  ];
+  const isActive = (to: string) => to === "/" ? pathname === "/" || pathname.startsWith("/agent") : pathname.startsWith(to);
+  const pageTitle = groups.flatMap(group => group.items).find(item => isActive(item.to))?.label
+    ?? (pathname.startsWith("/settings") ? t("layout.settings") : "Vibe-Trading");
+
+  const persistWidth = useCallback((width: number) => {
+    safeSet("qa-sidebar-width", String(width));
+    if (width >= COLLAPSE_THRESHOLD) {
+      safeSet("qa-sidebar-expanded-width", String(width));
+      setExpandedWidth(width);
+    }
+  }, []);
+  const toggleCollapse = () => {
+    const width = collapsed ? expandedWidth : MIN_SIDEBAR;
+    setSidebarWidth(width);
+    persistWidth(width);
+  };
+  const onResizeMouseDown = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    resizeCleanup.current?.();
+    const start = event.clientX;
+    const initial = sidebarWidth;
+    const direction = document.documentElement.dir === "rtl" ? -1 : 1;
+    let current = initial;
+    document.body.classList.add("sidebar-resizing");
+    const move = (next: MouseEvent) => {
+      current = Math.max(MIN_SIDEBAR, Math.min(MAX_SIDEBAR, initial + (next.clientX - start) * direction));
+      setSidebarWidth(current);
+    };
+    const finish = () => {
+      document.body.classList.remove("sidebar-resizing");
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", finish);
+      resizeCleanup.current = null;
+      persistWidth(current);
+    };
+    resizeCleanup.current = finish;
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", finish);
+  }, [sidebarWidth, persistWidth]);
+  useEffect(() => () => resizeCleanup.current?.(), []);
+  useEffect(() => { safeSet("qa-sidebar-width", String(sidebarWidth)); }, [sidebarWidth]);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 767px)");
+    const changed = () => { setMobile(media.matches); if (!media.matches) setMobileOpen(false); };
+    changed();
+    media.addEventListener("change", changed);
+    return () => media.removeEventListener("change", changed);
+  }, []);
+  useEffect(() => {
+    const changed = (event: StorageEvent) => {
+      if (event.key === "qa-sidebar-width") {
+        const next = parseInt(safeGet("qa-sidebar-width") ?? "", 10);
+        if (Number.isFinite(next) && next >= MIN_SIDEBAR && next <= MAX_SIDEBAR) setSidebarWidth(next);
+      } else if (event.key === "qa-background") setBg(getStoredBackground());
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, []);
+  useEffect(() => { setMobileOpen(false); }, [pathname, activeSessionId]);
+  useEffect(() => {
+    if (!mobile || !mobileOpen) return;
+    const workspace = workspaceRef.current;
+    if (workspace) workspace.inert = true;
+    closeMenuRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      // Escape belongs to a disclosure above the drawer before the drawer.
+      if (event.key === "Escape" && document.querySelector("[data-lang-menu]")) return;
+      if (event.key === "Escape") { event.preventDefault(); setMobileOpen(false); }
+      if (event.key !== "Tab") return;
+      const nodes = Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled])') ?? []);
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !sidebarRef.current?.contains(document.activeElement))) {
+        event.preventDefault(); last?.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !sidebarRef.current?.contains(document.activeElement))) {
+        event.preventDefault(); first?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      if (workspace) workspace.inert = false;
+      document.removeEventListener("keydown", onKey);
+      menuRef.current?.focus();
+    };
+  }, [mobile, mobileOpen]);
+
+  const loadSessions = useCallback(() => {
+    const generation = ++sessionGeneration.current;
+    api.listSessions().then((list) => {
+      if (generation === sessionGeneration.current) setSessions(Array.isArray(list) ? list : []);
+    }).catch(() => {}).finally(() => {
+      if (generation === sessionGeneration.current) setSessionsLoading(false);
+    });
+  }, []);
+  useEffect(() => {
+    loadSessions();
+    return () => { sessionGeneration.current += 1; };
+  }, [loadSessions, pathname, activeSessionId]);
+  useEffect(() => {
+    window.addEventListener("vibe:sessions-refresh", loadSessions);
+    return () => window.removeEventListener("vibe:sessions-refresh", loadSessions);
+  }, [loadSessions]);
+  const deleteSession = async () => {
+    if (!deleteTarget || mutationBusy) return;
+    setMutationBusy(true);
+    try {
+      await api.deleteSession(deleteTarget.session_id);
+      setSessions(items => items.filter(item => item.session_id !== deleteTarget.session_id));
+      setDeleteTarget(null);
+    } catch { toast.error(t("layout.sessionActionFailed", { defaultValue: zh ? "操作失败，请重试。" : "Couldn't complete the action. Try again." })); }
+    finally { setMutationBusy(false); }
+  };
+  const renameSession = async () => {
+    if (!renameTarget || !renameValue.trim() || mutationBusy) return;
+    setMutationBusy(true);
+    try {
+      await api.renameSession(renameTarget.session_id, renameValue.trim());
+      setSessions(items => items.map(item => item.session_id === renameTarget.session_id ? { ...item, title: renameValue.trim() } : item));
+      setRenameTarget(null);
+    } catch { toast.error(t("layout.sessionActionFailed", { defaultValue: zh ? "操作失败，请重试。" : "Couldn't complete the action. Try again." })); }
+    finally { setMutationBusy(false); }
+  };
+  const handleBgSave = (image: string | null): boolean => {
+    if (!saveBackground(image)) { toast.error(t("layout.imageSaveFailed")); return false; }
+    setBg(image);
+    toast.success(t(image ? "layout.backgroundApplied" : "layout.backgroundRemoved"));
+    return true;
+  };
+  const closeDrawer = () => setMobileOpen(false);
 
   return (
-    <div
-      className="flex h-screen relative bg-background rtl:flex-row-reverse"
-      style={
-        bg
-          ? {
-              backgroundImage: `url(${bg})`,
-              backgroundSize: "cover",
-              backgroundPosition: "center",
-              backgroundAttachment: "fixed",
-            }
-          : undefined
-      }
-    >
-      {/* Tint overlay — keeps content readable over custom background */}
-      {bg && <div className="absolute inset-0 bg-background/90 pointer-events-none" />}
-      <a
-        href="#main"
-        className="sr-only focus:not-sr-only focus:fixed focus:start-4 focus:top-4 focus:z-[70] focus:rounded-md focus:bg-background focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-primary/40"
-      >
-        {t('layout.skipToMain', { defaultValue: 'Skip to main content' })}
-      </a>
-      {/* Sidebar */}
-      <aside
-        data-sidebar
-        aria-label={t('layout.sidebar', { defaultValue: 'Vibe-Trading sidebar' })}
-        className={cn(
-          "max-md:w-12 border-e border-border/60 bg-card flex flex-col shrink-0 transition-[width] duration-200 overflow-visible relative",
-          collapsed ? "w-12" : ""
-        )}
-        style={{ width: sidebarWidth }}
-      >
-        {/* Brand */}
-        <div className={cn("border-b border-border/60", collapsed ? "p-2 flex justify-center" : "p-4 max-md:p-2 max-md:flex max-md:justify-center")}>
-          <Link
-            to="/"
-            aria-label="Vibe-Trading"
-            className={cn("flex items-center", collapsed ? "justify-center" : "gap-2 max-md:justify-center")}
-          >
-            <BrandMark className="h-6 w-6 shrink-0" />
-            {!collapsed && (
-              <span className="text-[15px] font-semibold tracking-tight max-md:hidden">Vibe-Trading</span>
-            )}
+    <div className="studio-shell" data-overlay={overlayOpen || undefined} data-custom-background={Boolean(bg) || undefined}>
+      <div className="studio-scene" data-custom={Boolean(bg) || undefined} aria-hidden="true" style={bg ? { backgroundImage: `url(${bg})` } : undefined} />
+      <div className="studio-atmosphere" aria-hidden="true" />
+      <a href="#main" className="studio-skip-link">{t("layout.skipToMain", { defaultValue: "Skip to main content" })}</a>
+      {mobileOpen && <div className="studio-drawer-backdrop" aria-hidden="true" onClick={closeDrawer} />}
+      <aside ref={sidebarRef} data-sidebar data-collapsed={collapsed || undefined} data-open={mobileOpen || undefined}
+        aria-label={t("layout.sidebar", { defaultValue: "Vibe-Trading sidebar" })}
+        role={mobile && mobileOpen ? "dialog" : undefined} aria-modal={mobile && mobileOpen ? true : undefined}
+        inert={mobile && !mobileOpen} aria-hidden={mobile && !mobileOpen || undefined} className="studio-sidebar" style={mobile ? undefined : { width: sidebarWidth }}>
+        <div className="studio-brand-row">
+          <Link to="/" aria-label="Vibe-Trading" className="studio-brand" onClick={closeDrawer}>
+            <span className="studio-brand-symbol"><BrandMark className="h-6 w-6" /></span>
+            {!collapsed && <span className="studio-brand-wordmark"><strong>Vibe-Trading</strong><small>RESEARCH STUDIO</small></span>}
           </Link>
+          <button ref={closeMenuRef} type="button" className="studio-icon-button studio-mobile-only" aria-label={t("layout.closeNavigation", { defaultValue: zh ? "关闭导航" : "Close navigation" })} onClick={closeDrawer}><X size={18} /></button>
+          {!collapsed && <button type="button" className="studio-icon-button studio-desktop-only studio-collapse" onClick={toggleCollapse} title={t("layout.collapse")} aria-label={t("layout.collapse")}><ChevronsLeft size={16} /></button>}
         </div>
-
-        {/* Nav */}
-        <nav
-          aria-label={t('layout.mainNavigation', { defaultValue: 'Main navigation' })}
-          className={cn("space-y-0.5", collapsed ? "p-1" : "p-2 max-md:p-1")}
-        >
-          {NAV.map(({ to, icon: Icon, label }) => {
-            const text = label;
-            return (
-              <Link
-                key={to}
-                to={to}
-                aria-label={text}
-                className={cn(
-                  "flex items-center rounded-md text-[13px] transition-colors",
-                  collapsed ? "justify-center px-2 py-1.5" : "gap-3 px-3 py-1.5 max-md:justify-center max-md:px-2",
-                  (to === "/" ? pathname === "/" || pathname.startsWith("/agent") : pathname.startsWith(to))
-                    ? "bg-primary/10 text-primary font-medium"
-                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                )}
-                title={collapsed ? text : undefined}
-              >
-                <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                {!collapsed && <span className="max-md:hidden">{text}</span>}
-              </Link>
-            );
-          })}
-        </nav>
-
-        {/* Sessions — hidden when collapsed */}
-        {!collapsed && (
-          <div className="flex-1 overflow-auto border-t border-border/60 mt-2 flex flex-col max-md:hidden">
-            <div className="flex items-center justify-between px-4 py-2">
-              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                <MessageSquare className="h-3.5 w-3.5" />
-                {t('layout.sessions')}
-              </span>
-              <Link
-                to="/agent"
-                aria-label={t('layout.newChat')}
-                className="flex items-center gap-1 p-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                title={t('layout.newChat')}
-              >
-                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-              </Link>
+        <div className="studio-sidebar-scroll">
+          <nav aria-label={t("layout.mainNavigation", { defaultValue: "Main navigation" })}>
+            {groups.map(group => <div className="studio-nav-group" key={group.label}>
+              {!collapsed && <p className="studio-section-label">{group.label}</p>}
+              {group.items.map(({ to, icon: Icon, label }) => <Link key={to} to={to} onClick={closeDrawer}
+                aria-label={label} aria-current={isActive(to) ? "page" : undefined} title={collapsed ? label : undefined}
+                className={cn("studio-nav-link", isActive(to) && "is-active")}>
+                <Icon size={17} strokeWidth={1.6} aria-hidden="true" />{!collapsed && <span>{label}</span>}
+                {isActive(to) && !collapsed && <span className="studio-active-mark" aria-hidden="true" />}
+              </Link>)}
+            </div>)}
+          </nav>
+          {!collapsed && <section className="studio-sessions">
+            <div className="studio-section-heading"><span className="studio-section-label">{t("layout.sessions")}</span>
+              <Link to="/agent" className="studio-icon-button" aria-label={t("layout.newChat")} title={t("layout.newChat")} onClick={closeDrawer}><Plus size={16} /></Link>
             </div>
-
-            <div className="px-2 pb-2 space-y-0.5 overflow-auto flex-1">
-              {sessionsLoading ? (
-                <div className="space-y-1.5 px-2 py-1">
-                  {[1, 2, 3].map((i) => (
-                    <div key={i} className="h-7 rounded-md bg-muted/50 animate-pulse" />
-                  ))}
+            {sessionsLoading && <div className="studio-session-skeleton" aria-hidden="true"><span /><span /><span /></div>}
+            {!sessionsLoading && !sessions.length && <p className="studio-empty-sessions">{t("layout.noSessions")}</p>}
+            <div className="studio-session-list">
+              {sessions.map(session => <div className={cn("studio-session-row group", session.session_id === activeSessionId && "is-active")} key={session.session_id}>
+                <Link to={`/agent?session=${session.session_id}`} onClick={closeDrawer} title={session.title || session.session_id} aria-current={session.session_id === activeSessionId ? "page" : undefined}>
+                  {streamingSessionId === session.session_id ? <Loader2 size={13} className="animate-spin text-primary shrink-0" /> : <MessageSquare size={13} strokeWidth={1.4} className="shrink-0" />}
+                  <span className="min-w-0 truncate">{session.title || session.session_id.slice(0, 16)}</span>
+                </Link>
+                <div className="studio-session-actions group-focus-within:opacity-100">
+                  <button type="button" title={t("layout.rename")} aria-label={t("layout.rename")} onClick={() => { setRenameTarget(session); setRenameValue(session.title || ""); closeDrawer(); }}><Pencil size={13} /></button>
+                  <button type="button" title={t("layout.delete")} aria-label={t("layout.delete")} onClick={() => { setDeleteTarget(session); closeDrawer(); }}><Trash2 size={13} /></button>
                 </div>
-              ) : sessions.length === 0 ? (
-                <p className="px-3 py-2 text-xs text-muted-foreground/60">{t('layout.noSessions')}</p>
-              ) : null}
-              {sessions.map((s) => {
-                const isActive = s.session_id === activeSessionId;
-                const isDeleting = deleteTarget === s.session_id;
-                const isRenaming = renameTarget === s.session_id;
-                return (
-                  <div key={s.session_id} className="group relative flex items-center">
-                    {isRenaming ? (
-                      <input
-                        autoFocus
-                        value={renameValue}
-                        onChange={(e) => setRenameValue(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") renameSession(s.session_id); if (e.key === "Escape") setRenameTarget(null); }}
-                        onBlur={() => renameSession(s.session_id)}
-                        aria-label={`${t('layout.rename')}: ${s.title || s.session_id}`}
-                        className="flex-1 min-w-0 ps-3 pe-2 py-1.5 rounded-md text-xs border border-primary bg-background outline-none focus:ring-2 focus:ring-primary/40"
-                      />
-                    ) : (
-                      <Link
-                        to={`/agent?session=${s.session_id}`}
-                        className={cn(
-                          "flex-1 min-w-0 ps-3 pe-14 py-1.5 rounded-md text-xs transition-colors truncate block border-s-2",
-                          isActive
-                            ? "border-s-primary bg-primary/10 text-primary font-medium"
-                            : "border-s-transparent text-muted-foreground hover:bg-muted hover:text-foreground"
-                        )}
-                        title={s.title || s.session_id}
-                      >
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          {streamingSessionId === s.session_id ? (
-                            <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
-                          ) : (
-                            // Transparent placeholder keeps titles aligned with
-                            // spinner rows without a meaningless gray dot.
-                            <span className={cn(
-                              "h-1.5 w-1.5 rounded-full shrink-0",
-                              isActive ? "bg-primary/70" : "bg-transparent"
-                            )} />
-                          )}
-                          <span className="min-w-0 truncate">{s.title || s.session_id.slice(0, 16)}</span>
-                        </span>
-                      </Link>
-                    )}
-                    {!isRenaming && isDeleting ? (
-                      <div className="absolute right-0.5 flex items-center gap-0.5">
-                        <button onClick={() => deleteSession(s.session_id)} className="p-1.5 text-danger hover:bg-danger/10 rounded text-[10px] font-medium">{t('layout.confirm')}</button>
-                        <button onClick={() => setDeleteTarget(null)} className="p-1.5 text-muted-foreground hover:bg-muted rounded text-[10px]">{t('layout.cancel')}</button>
-                      </div>
-                    ) : !isRenaming ? (
-                      <div className="absolute right-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 flex items-center gap-0.5 transition-opacity">
-                        <button
-                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setRenameTarget(s.session_id); setRenameValue(s.title || ""); }}
-                          className="p-1.5 text-muted-foreground hover:text-foreground rounded"
-                          title={t('layout.rename')}
-                        >
-                          <Pencil className="h-3 w-3" />
-                        </button>
-                        <button
-                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDeleteTarget(s.session_id); }}
-                          className="p-1.5 text-muted-foreground hover:text-danger rounded"
-                          title={t('layout.delete')}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
+              </div>)}
             </div>
+          </section>}
+        </div>
+        <footer className="studio-sidebar-footer">
+          <Link to="/settings" className={cn("studio-nav-link", isActive("/settings") && "is-active")} aria-label={t("layout.settings")} aria-current={isActive("/settings") ? "page" : undefined} title={collapsed ? t("layout.settings") : undefined} onClick={closeDrawer}><Settings size={17} strokeWidth={1.6} />{!collapsed && <span>{t("layout.settings")}</span>}</Link>
+          <div className="studio-preference-tools">
+            <button className="studio-icon-button" type="button" title={t("layout.changeAvatar")} aria-label={t("layout.changeAvatar")} onClick={() => { closeDrawer(); setAvatarDialogOpen(true); }}><UserRound size={16} /></button>
+            <button className="studio-icon-button" type="button" title={t("layout.changeBackground")} aria-label={t("layout.changeBackground")} onClick={() => { closeDrawer(); setBgDialogOpen(true); }}><Image size={16} /></button>
+            <button className="studio-icon-button" type="button" title={dark ? t("layout.light") : t("layout.dark")} aria-label={dark ? t("layout.light") : t("layout.dark")} onClick={toggle}>{dark ? <Sun size={16} /> : <Moon size={16} />}</button>
+            {collapsed && <button className="studio-icon-button studio-desktop-only" type="button" title={t("layout.expand")} aria-label={t("layout.expand")} onClick={toggleCollapse}><ChevronsRight size={16} /></button>}
           </div>
-        )}
-
-        {/* Spacer when collapsed */}
-        {collapsed && <div className="flex-1" />}
-
-        {/* Footer */}
-        <div className={cn("mt-auto border-t border-border/60", collapsed ? "p-1 flex flex-col items-center gap-1" : "p-3 space-y-2 max-md:p-1 max-md:flex max-md:flex-col max-md:items-center max-md:gap-1 max-md:space-y-0")}>
-          {/* Avatar + Background row */}
-          {collapsed ? (
-            <>
-              <button
-                onClick={() => setAvatarDialogOpen(true)}
-                className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors"
-                title={t('layout.changeAvatar')}
-              >
-                <span className="text-[10px] font-bold">P</span>
-              </button>
-              <button
-                onClick={() => setBgDialogOpen(true)}
-                className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors"
-                title={t('layout.changeBackground')}
-              >
-                <Image className="h-3.5 w-3.5 shrink-0" />
-              </button>
-              {bg && (
-                <button
-                  onClick={() => handleBgSave(null)}
-                  className="p-1.5 text-destructive/70 hover:text-destructive rounded transition-colors"
-                  title={t('layout.removeBackground')}
-                >
-                  <Trash2 className="h-3.5 w-3.5 shrink-0" />
-                </button>
-              )}
-            </>
-          ) : (
-            <div className="flex items-center w-full">
-              <button
-                onClick={() => setAvatarDialogOpen(true)}
-                className="flex-1 flex items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground rounded py-1 transition-colors"
-              >
-                {t('layout.changeAvatar')}
-              </button>
-              <span className="w-px h-5 bg-border shrink-0" />
-              <button
-                onClick={() => setBgDialogOpen(true)}
-                className="flex-1 flex items-center justify-center text-xs text-muted-foreground hover:text-foreground rounded py-1 transition-colors"
-              >
-                {t('layout.changeBackground')}
-              </button>
-              {bg && (
-                <>
-                  <span className="w-px h-5 bg-border shrink-0" />
-                  <button
-                    onClick={() => handleBgSave(null)}
-                    className="flex items-center justify-center gap-1 text-xs text-destructive/80 hover:text-destructive rounded py-1 px-1.5 transition-colors"
-                    title={t('layout.removeBackground')}
-                  >
-                    <Trash2 className="h-3 w-3 shrink-0" />
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-
-          {collapsed ? (
-            <>
-              <button onClick={toggle} className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors" title={dark ? t('layout.light') : t('layout.dark')}>
-                {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-              </button>
-              <button onClick={toggleCollapse} className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors" title={t('layout.expand')}>
-                <ChevronsRight className="h-3.5 w-3.5" />
-              </button>
-            </>
-          ) : (
-            <>
-              <div className="flex items-center justify-between max-md:flex-col">
-                <button
-                  onClick={toggle}
-                  className="flex items-center gap-1.5 p-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-                  <span className="max-md:hidden">{dark ? t('layout.light') : t('layout.dark')}</span>
-                </button>
-                <div className="flex items-center gap-1 max-md:hidden">
-                  <button
-                    onClick={toggleCollapse}
-                    className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors"
-                    title={t('layout.collapse')}
-                  >
-                    <ChevronsLeft className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-              <div className="flex flex-col gap-1 max-md:items-center">
-                <LanguageSwitcher />
-                {/* About is marketing, not a work surface — it lives here by
-                    the version stamp instead of in the primary nav. */}
-                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/60 max-md:hidden">
-                  <span>{t('app.version')}</span>
-                  <span aria-hidden="true">·</span>
-                  <Link to="/about" className="transition-colors hover:text-foreground">
-                    {t('layout.about')}
-                  </Link>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Resize handle */}
-        <div
-          className="sidebar-resize-handle absolute top-0 right-0 w-1 h-full z-10 transition-colors"
-          style={{ right: -2 }}
-          onMouseDown={onResizeMouseDown}
-        />
+          {!collapsed && <div className="studio-footer-meta"><LanguageSwitcher /><Link to="/about" onClick={closeDrawer} title={t("layout.about")}>{t("app.version")}<ArrowUpRight size={11} /></Link></div>}
+        </footer>
+        <div className="sidebar-resize-handle studio-resize-handle" onMouseDown={onResizeMouseDown} aria-hidden="true" />
       </aside>
-
-      {/* Main */}
-      <div className="relative flex-1 flex flex-col overflow-hidden">
+      <div ref={workspaceRef} className="studio-workspace relative">
+        {mobile && <header className="studio-mobile-header">
+          <button ref={menuRef} type="button" className="studio-icon-button" aria-label={t("layout.openNavigation", { defaultValue: zh ? "打开导航" : "Open navigation" })} aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)}><Menu size={20} /></button>
+          <span>{pageTitle}</span>
+          <Link to="/agent" className="studio-icon-button" aria-label={t("layout.newChat")} title={t("layout.newChat")}><Plus size={20} /></Link>
+        </header>}
         <ConnectionBanner status={sseStatus} retryAttempt={sseRetryAttempt} />
-        <main id="main" className="flex-1 min-h-0 overflow-auto">
-          <Outlet />
-        </main>
+        <main id="main" className="studio-main flex-1 min-h-0 overflow-auto"><Outlet /></main>
       </div>
-
-      {/* Dialogs */}
       <AvatarSelector open={avatarDialogOpen} onClose={() => setAvatarDialogOpen(false)} />
       <BackgroundSelector open={bgDialogOpen} onClose={() => setBgDialogOpen(false)} onSave={handleBgSave} />
+      <ConfirmDialog open={Boolean(deleteTarget)} title={t("layout.delete")} description={deleteTarget?.title || deleteTarget?.session_id}
+        confirmLabel={t("layout.confirm")} cancelLabel={t("layout.cancel")} tone="destructive" onCancel={() => { if (!mutationBusy) setDeleteTarget(null); }} onConfirm={() => void deleteSession()} />
+      <DialogSurface open={Boolean(renameTarget)} title={t("layout.rename")} closeLabel={t("layout.cancel")} onClose={() => { if (!mutationBusy) setRenameTarget(null); }}>
+        <form onSubmit={event => { event.preventDefault(); void renameSession(); }} className="space-y-4">
+          <input data-autofocus value={renameValue} maxLength={160} disabled={mutationBusy} onChange={event => setRenameValue(event.target.value)}
+            aria-label={`${t("layout.rename")}: ${renameTarget?.title || renameTarget?.session_id || ""}`} className="studio-rename-input focus:ring-2 focus:ring-primary/40" />
+          <div className="flex justify-end gap-2"><button type="button" className="studio-secondary-button" disabled={mutationBusy} onClick={() => setRenameTarget(null)}>{t("layout.cancel")}</button><button type="submit" className="studio-primary-button" disabled={mutationBusy || !renameValue.trim()}>{mutationBusy ? <Loader2 size={16} className="animate-spin" /> : t("layout.confirm")}</button></div>
+        </form>
+      </DialogSurface>
     </div>
   );
 }
@@ -515,18 +298,14 @@ export function Layout() {
 // and emits the `languageChanged` event handled in the i18n module to flip
 // <html dir/lang> for RTL languages.
 //
-// Positioning: the menu uses `position: fixed` and is placed at
-// `(triggerLeft, triggerTop - gap)`. This bypasses every ancestor's
-// `overflow: hidden/auto/scroll`, stacking contexts, and CSS direction
-// rules, so the dropdown is *always* fully visible regardless of where
-// the trigger sits in the layout or which language is active. We measure
-// the trigger with getBoundingClientRect() and update on resize/scroll.
+// Anchor to the footer trigger using logical CSS coordinates. The sidebar's
+// backdrop-filter/transform establishes a containing block, so viewport-based
+// fixed coordinates would double-count its RTL offset and overflow the screen.
 // ---------------------------------------------------------------------------
 function LanguageSwitcher() {
   const { i18n, t } = useTranslation();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const [menuStyle, setMenuStyle] = useState<{ left: number; bottom: number; minWidth: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -540,7 +319,11 @@ function LanguageSwitcher() {
       }
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     document.addEventListener("mousedown", onClick);
     document.addEventListener("touchstart", onClick, { passive: true });
@@ -549,38 +332,6 @@ function LanguageSwitcher() {
       document.removeEventListener("mousedown", onClick);
       document.removeEventListener("touchstart", onClick);
       document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  // Recompute the menu's fixed coordinates whenever it opens, or whenever
-  // the viewport changes (resize / scroll / language switch). The menu is
-  // anchored to the trigger's *left edge* and sits *above* the trigger.
-  useEffect(() => {
-    if (!open || !triggerRef.current) return;
-    const place = () => {
-      const r = triggerRef.current?.getBoundingClientRect();
-      if (!r) return;
-      // Anchor: align the menu's right edge with the trigger's right edge,
-      // then clamp to the viewport so the menu never overflows the screen.
-      const menuWidth = 160; // px — approx longest label "العربية" + padding
-      const gap = 4; // mb-1
-      const desiredLeft = r.right - menuWidth;
-      const maxLeft = window.innerWidth - menuWidth - 8;
-      const minLeft = 8;
-      const left = Math.max(minLeft, Math.min(maxLeft, desiredLeft));
-      setMenuStyle({
-        left,
-        // distance from viewport bottom: viewport height − trigger top + gap
-        bottom: window.innerHeight - r.top + gap,
-        minWidth: menuWidth,
-      });
-    };
-    place();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
     };
   }, [open]);
 
@@ -597,7 +348,7 @@ function LanguageSwitcher() {
     SUPPORTED_LANGUAGES[0];
 
   return (
-    <div>
+    <div style={{ position: "relative" }}>
       <button
         ref={triggerRef}
         type="button"
@@ -610,15 +361,18 @@ function LanguageSwitcher() {
         <span className="whitespace-nowrap max-md:hidden">{current.label}</span>
         <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform max-md:hidden", open && "rotate-180")} />
       </button>
-      {open && menuStyle && (
+      {open && (
         <ul
           data-lang-menu
           aria-label="Select language"
           style={{
-            position: "fixed",
-            left: menuStyle.left,
-            bottom: menuStyle.bottom,
-            minWidth: menuStyle.minWidth,
+            position: "absolute",
+            insetInlineStart: 0,
+            bottom: "calc(100% + 8px)",
+            width: 160,
+            maxWidth: "calc(100vw - 24px)",
+            maxHeight: "60dvh",
+            overflowY: "auto",
             zIndex: 60,
           }}
           className="rounded-md border border-border/60 bg-popover shadow-lg ring-1 ring-black/5"

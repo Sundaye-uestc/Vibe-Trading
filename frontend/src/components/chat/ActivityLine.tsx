@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  AlertTriangle,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -48,6 +49,9 @@ function StateIcon({ state }: { state: AgentActivity["state"] }): JSX.Element {
   }
   if (state === "done") {
     return <CheckCircle2 className="h-3.5 w-3.5 text-success" aria-hidden="true" />;
+  }
+  if (state === "partial") {
+    return <AlertTriangle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" aria-hidden="true" />;
   }
   if (state === "stopped") {
     return <Octagon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />;
@@ -128,6 +132,9 @@ export const ActivityLine = memo(function ActivityLine({
     }
     if (activity.state === "done") {
       return `${t("agent.activity.done" as never)} · ${stepsLabel} · ${elapsed}`;
+    }
+    if (activity.state === "partial") {
+      return `${t("agent.activity.partial" as never)} · ${stepsLabel} · ${elapsed}`;
     }
     const latest = newestStep ? localizeToolName(newestStep.tool) : "";
     return [verb, latest, elapsed, stepsLabel].filter(Boolean).join(" · ");

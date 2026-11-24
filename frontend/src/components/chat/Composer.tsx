@@ -20,7 +20,7 @@ import {
   Loader2,
   Paperclip,
   Plus,
-  Send,
+  ArrowUp,
   Square,
   Target,
   Users,
@@ -245,9 +245,13 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
       uploadMenuTriggerRef.current?.focus();
     };
     if (showUploadMenu) {
+      const focusFrame = requestAnimationFrame(() => {
+        uploadMenuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus();
+      });
       document.addEventListener("mousedown", handleClickOutside);
       document.addEventListener("keydown", handleEscape);
       return () => {
+        cancelAnimationFrame(focusFrame);
         document.removeEventListener("mousedown", handleClickOutside);
         document.removeEventListener("keydown", handleEscape);
       };
@@ -262,7 +266,7 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
       onDragOver={(event) => event.preventDefault()}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className="relative space-y-2"
+      className="studio-composer relative space-y-2"
     >
       {draggingFiles && (
         <div role="status" className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary bg-background/90 text-sm font-medium text-primary">
@@ -318,8 +322,8 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
         </div>
       )}
       <LiveRuntimeControl />
-      <div className="flex items-end gap-2 rounded-2xl border border-border/60 bg-background p-1.5 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_8px_24px_-12px_rgba(0,0,0,0.12)] transition-shadow focus-within:ring-2 focus-within:ring-primary/25 dark:bg-card">
-        <div className="relative" ref={uploadMenuRef}>
+      <div className="studio-composer-surface transition-shadow">
+        <div className="studio-composer-options relative" ref={uploadMenuRef}>
           <button
             ref={uploadMenuTriggerRef}
             type="button"
@@ -328,7 +332,7 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
             aria-haspopup="menu"
             aria-expanded={showUploadMenu}
             aria-controls="agent-more-options-menu"
-            className="w-10 h-10 rounded-full border flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 shrink-0"
+            className="studio-composer-more flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 shrink-0"
             title={t("agent.moreOptions")}
           >
             <Plus className="h-4 w-4" />
@@ -337,7 +341,18 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
             <div
               id="agent-more-options-menu"
               role="menu"
-              className="absolute bottom-full left-0 mb-2 w-52 rounded-xl border bg-background/95 backdrop-blur-sm shadow-lg py-1 z-50"
+              aria-label={t("agent.moreOptions")}
+              onKeyDown={(event) => {
+                const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'));
+                const index = items.indexOf(document.activeElement as HTMLButtonElement);
+                if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+                  event.preventDefault();
+                  const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+                    : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+                  items[next]?.focus();
+                } else if (event.key === "Tab") setShowUploadMenu(false);
+              }}
+              className="studio-composer-menu absolute bottom-full start-0 mb-3 w-60 rounded-2xl border py-2 z-50"
             >
               <button
                 type="button"
@@ -472,7 +487,7 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
           aria-label={t("agent.messageInputLabel")}
           aria-readonly={streaming}
           className={[
-            "min-h-[52px] flex-1 resize-none overflow-y-auto bg-transparent px-3 py-3 text-sm outline-none max-h-32",
+            "studio-composer-input min-w-0 resize-none overflow-y-auto bg-transparent text-sm outline-none",
             streaming ? "cursor-not-allowed text-muted-foreground/70" : "",
           ].join(" ")}
           readOnly={streaming}
@@ -482,7 +497,7 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
             type="button"
             onClick={onExport}
             disabled={!canExport}
-            className="h-10 px-3 rounded-xl border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-30 disabled:pointer-events-none"
+            className="studio-composer-export text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30 disabled:pointer-events-none"
             title={t("agent.exportChat")}
           >
             <Download className="h-4 w-4" />
@@ -492,7 +507,7 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
           <button
             type="button"
             onClick={onCancel}
-            className="h-10 px-4 rounded-xl bg-destructive text-destructive-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+            className="studio-composer-submit studio-composer-stop bg-destructive text-destructive-foreground text-sm font-medium"
             title={t("agent.stopGeneration")}
           >
             <Square className="h-4 w-4" />
@@ -501,15 +516,15 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
           <button
             type="submit"
             disabled={uploading || (goalComposerActive ? !input.trim() : (!input.trim() && attachments.length === 0))}
-            className="h-10 px-4 rounded-xl bg-primary text-primary-foreground text-sm font-medium disabled:opacity-40 hover:opacity-90 transition-opacity"
+            className="studio-composer-submit bg-primary text-primary-foreground text-sm font-medium disabled:opacity-40"
             title={t("agent.send")}
             aria-label={t("agent.send")}
           >
-            <Send className="h-4 w-4" />
+            <ArrowUp className="h-[18px] w-[18px]" />
           </button>
         )}
       </div>
-      <p className="px-1 text-[11px] text-muted-foreground">{t("agent.inputHint")}</p>
+      <p className="studio-composer-hint text-[11px] text-muted-foreground">{t("agent.inputHint")}</p>
     </form>
   );
 }));

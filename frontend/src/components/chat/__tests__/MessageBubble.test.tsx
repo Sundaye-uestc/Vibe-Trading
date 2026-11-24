@@ -100,6 +100,13 @@ describe("MessageBubble", () => {
   });
 
   describe("answer messages", () => {
+    it("keeps a degraded answer visible and labels it as a partial result", () => {
+      render(<MessageBubble msg={makeMsg({ type: "answer", degraded: true, content: "Only sourced observations remain." })} />);
+      expect(screen.getByRole("status")).toHaveTextContent(i18n.t("agent.activity.partial" as never));
+      expect(screen.getByRole("status")).toHaveTextContent(i18n.t("messageBubble.partialResultHint" as never));
+      expect(screen.getByTestId("markdown")).toHaveTextContent("Only sourced observations remain.");
+    });
+
     it("renders markdown content", () => {
       render(<MessageBubble msg={makeMsg({ type: "answer", content: "Here is the **analysis**" })} />);
       expect(screen.getByTestId("markdown")).toHaveTextContent("Here is the **analysis**");

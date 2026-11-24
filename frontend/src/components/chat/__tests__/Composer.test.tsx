@@ -155,4 +155,19 @@ describe("Composer", () => {
     await waitFor(() => expect(api.uploadFile).toHaveBeenCalledTimes(5));
     expect(screen.queryByText("file-5.txt")).not.toBeInTheDocument();
   });
+  it("keeps the options menu keyboard-accessible and returns focus when dismissed", async () => {
+    const user = userEvent.setup();
+    render(<Composer {...baseProps} />);
+    const trigger = screen.getByRole("button", { name: "More options" });
+    await user.click(trigger);
+    const items = screen.getAllByRole("menuitem");
+    await waitFor(() => expect(items[0]).toHaveFocus());
+    await user.keyboard("{End}");
+    expect(items[items.length - 1]).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(baseProps.onSubmit).not.toHaveBeenCalled();
+  });
+
 });

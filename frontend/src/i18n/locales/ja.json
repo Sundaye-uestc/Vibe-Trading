@@ -61,13 +61,18 @@
     "storageReclaimed": "Freed space by clearing a previously stored image",
     "changeBackground": "Change Background",
     "applyBackground": "Apply Background",
-    "removeBackground": "Remove Background",
+    "removeBackground": "既定のシーンに戻す",
     "backgroundSizeHint": "Upload an image as app background (max 5MB)",
     "backgroundApplied": "Background applied",
-    "backgroundRemoved": "Background removed",
+    "backgroundRemoved": "既定のシーンに戻しました",
     "dragToCrop": "Drag to adjust crop area",
     "avatarPreview": "Preview",
-    "paperTrading": "模擬取引"
+    "paperTrading": "模擬取引",
+    "workspaceGroup": "ワークスペース",
+    "researchGroup": "リサーチツール",
+    "openNavigation": "ナビゲーションを開く",
+    "closeNavigation": "ナビゲーションを閉じる",
+    "sessionActionFailed": "操作を完了できませんでした。再試行してください。"
   },
   "runtime": {
     "monitorBadge": "取引モニター",
@@ -385,7 +390,12 @@
       "shadowBacktest": "Shadow Account Backtest",
       "memory": "Persistent Memory",
       "sessionSearch": "Session Search"
-    }
+    },
+    "studioEyebrow": "考えを深める、余白を。",
+    "studioTitleFirst": "すべてのアイデアに、",
+    "studioTitleSecond": "確かな根拠を。",
+    "studioPromptLabel": "ひとつの問いから",
+    "studioTraceCaption": "問い · 調査 · 検証"
   },
   "settings": {
     "title": "設定",
@@ -697,6 +707,7 @@
         "working": "処理中"
       },
       "done": "完了",
+      "partial": "一部完了",
       "stopped": "あなたが停止しました",
       "timeout": "{{elapsed}} 経過したため待機を停止しました — 実行はまだ完了処理中の可能性があります",
       "failed": "失敗",
@@ -1283,6 +1294,10 @@
     "daysHours": "{{d}}d{{h}}h"
   },
   "swarmStatus": {
+    "teamDraft": "チームの原稿を表示",
+    "draftSource": "チームが提出した調査原稿です。メインエージェントの検証結果はチャットの返信に表示されます。",
+    "retryDraft": "原稿を読み込めませんでした。再試行",
+    "noDraft": "原稿は保存されていません。",
     "agents": "{{done}}/{{total}} エージェント",
     "layer": "第 {{current}} ラウンド（全 {{total}} ラウンド）",
     "agent": "エージェント",
@@ -1328,6 +1343,7 @@
   },
   "messageBubble": {
     "elapsedTime": "合計応答時間",
+    "partialResultHint": "この回答には一部の結果のみが含まれています。",
     "copied": "コピーしました",
     "copy": "コピー",
     "copyFailed": "コピーできませんでした。テキストを選択して Ctrl+C を押してください。",
@@ -1374,6 +1390,8 @@
     "somethingWrong": "問題が発生しました。ページを再読み込みして続行してください。"
   },
   "toolProgress": {
+    "noData": "データ未取得",
+    "needsResolution": "銘柄の確認待ち",
     "step": "ステップ {{step}} · {{tool}}",
     "toolsRunning": "{{count}} 件を同時に処理中",
     "toolsCompleted": "{{count}} ステップ完了",
@@ -1869,6 +1887,10 @@
     "dataMissingCount": "欠落日数",
     "dataSettlementHint": "データ範囲は決済を保証しません。口座開始日、取引終了時刻、データ検証、注文ルールが適用されます。",
     "dataJob_data_not_ready": "データソースの日足はまだ不完全です。既存データを保持します。後で手動更新してください。",
-    "dataOutcomeUnknown": "更新結果は不明です。再試行する前に状態を更新し、公開済みデータを確認してください。"
+    "dataOutcomeUnknown": "更新結果は不明です。再試行する前に状態を更新し、公開済みデータを確認してください。",
+    "studioEyebrow": "戦略を試す場所",
+    "studioOverview": "口座概要",
+    "studioPositions": "保有銘柄数",
+    "studioLedgerDate": "台帳更新日"
   }
 }

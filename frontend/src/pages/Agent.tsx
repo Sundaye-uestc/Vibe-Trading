@@ -368,7 +368,7 @@ export function Agent() {
   }, [cancelPendingStreamFlush]);
 
   const archiveActivity = useCallback((
-    terminalState: "stopped" | "timeout" | "failed" | "done",
+    terminalState: "stopped" | "timeout" | "failed" | "partial" | "done",
     endedAt = Date.now(),
   ): AgentActivity | null => {
     const store = act();
@@ -577,12 +577,25 @@ export function Agent() {
                 ? "failed"
                 : meta?.status === "cancelled"
                   ? "stopped"
-                  : "done",
+                  : meta?.degraded === true
+                    ? "partial"
+                    : "done",
               startedAt: attemptStartedAt,
               endedAt: ts,
             })
           : [];
         agentMsgs.push(...toolTimeline);
+        if (m.role === "assistant") {
+          const seen = new Set<string>();
+          for (const entry of m.tool_trail ?? []) {
+            if (entry.tool !== "run_swarm" || entry.status !== "ok" || !entry.preview) continue;
+            const team = buildSwarmStatusFromToolResultPreview(entry.preview);
+            if (team?.status !== "completed" || seen.has(team.runId)) continue;
+            seen.add(team.runId);
+            agentMsgs.push({ id: `swarm_${team.runId}`, type: "swarm_status", content: "",
+              swarmRunId: team.runId, swarmStatus: team, timestamp: ts });
+          }
+        }
         const lastToolTimestamp = toolTimeline.length > 0
           ? toolTimeline[toolTimeline.length - 1].timestamp
           : ts - 1;
@@ -607,7 +620,7 @@ export function Agent() {
         } else if (runId) {
           // Show text answer first (if non-empty), then chart card
           if (m.content && m.content !== "Strategy execution completed.") {
-            agentMsgs.push({ id: m.message_id + "_ans", type: "answer", content: m.content, elapsed_ms: elapsedMs, timestamp: assistantTs });
+            agentMsgs.push({ id: m.message_id + "_ans", type: "answer", content: m.content, elapsed_ms: elapsedMs, degraded: meta?.degraded === true, timestamp: assistantTs });
           }
           if (metrics && Object.keys(metrics).length > 0) {
             agentMsgs.push({ id: m.message_id, type: "run_complete", content: "", runId, metrics, timestamp: assistantTs + 1 });
@@ -641,7 +654,7 @@ export function Agent() {
             }
           }
         } else {
-          agentMsgs.push({ id: m.message_id, type: "answer", content: m.content, elapsed_ms: elapsedMs, timestamp: assistantTs });
+          agentMsgs.push({ id: m.message_id, type: "answer", content: m.content, elapsed_ms: elapsedMs, degraded: meta?.degraded === true, timestamp: assistantTs });
         }
       }
       if (genRef.current !== gen) return;
@@ -817,7 +830,8 @@ export function Agent() {
         pendingProgressRef.current.delete(toolProgressKey(callId, toolName));
         // Only update tracker (no message creation during streaming)
         act().updateRunningToolCall(callId, toolName, {
-          status: d.status === "ok" ? "ok" : "error",
+          status: d.status === "ok" ? "ok"
+            : d.outcome === "needs_resolution" || d.outcome === "no_data" ? d.outcome : "error",
           preview: String(d.preview || ""),
           elapsed_ms: Number(d.elapsed_ms || 0),
           elapsed_s: undefined,
@@ -928,7 +942,7 @@ export function Agent() {
         if (attemptId && act().messages.some(
           (message) => (
             message.meta?.activity?.attemptId === attemptId
-            && message.meta.activity.state === "done"
+            && ["done", "partial"].includes(message.meta.activity.state)
           ),
         )) {
           clearStreamingView();
@@ -969,7 +983,7 @@ export function Agent() {
         }
         const s = act();
         const completedTools = s.activity?.steps ?? s.toolCalls;
-        const completedActivity = archiveActivity("done", completedEndedAt);
+        const completedActivity = archiveActivity(d.degraded === true ? "partial" : "done", completedEndedAt);
         const completedAttemptId = completedActivity?.attemptId || attemptId;
         useAgentStore.setState((state) => ({
           messages: state.messages.filter(
@@ -991,6 +1005,7 @@ export function Agent() {
             type: "answer",
             content: finalAnswer,
             elapsed_ms: Number(d.elapsed_ms || 0) || undefined,
+            degraded: d.degraded === true,
             timestamp: Date.now(),
           });
         }
@@ -1790,7 +1805,7 @@ export function Agent() {
   }, [timelineRows.length]);
 
   return (
-    <div className="flex flex-col flex-1 min-w-0 overflow-hidden h-full">
+    <div className="studio-agent flex flex-col flex-1 min-w-0 overflow-hidden h-full" data-empty={!sessionLoading && messages.length === 0 ? "true" : undefined}>
       <ModelRuntimeBar
         settings={llmSettings}
         runtimeProvider={visibleRuntimeIdentity.provider}
@@ -1803,11 +1818,11 @@ export function Agent() {
       <div
         ref={listRef}
         data-streaming={status === "streaming" ? "true" : undefined}
-        className="chat-scroll-container flex-1 overflow-auto p-6 relative"
+        className="studio-conversation chat-scroll-container flex-1 overflow-auto relative"
       >
         <div
           className={[
-            "max-w-4xl mx-auto space-y-8",
+            "studio-reading-column mx-auto space-y-8",
             !sessionLoading && messages.length === 0 ? "min-h-full flex flex-col" : "",
           ].join(" ")}
         >          {sessionLoading && (
@@ -1826,7 +1841,7 @@ export function Agent() {
           {!sessionLoading && messages.length === 0 && (
             // my-auto (not justify-*) centers the hero vertically while staying
             // scroll-reachable once the example library expands past the viewport.
-            <div className="msg-enter my-auto">
+            <div className="studio-welcome-slot msg-enter my-auto">
               <WelcomeScreen onExample={fillComposer} />
             </div>
           )}
@@ -1946,9 +1961,9 @@ export function Agent() {
 
       <div
         data-agent-composer
-        className="border-t p-4 bg-background/80 backdrop-blur-sm"
+        className="studio-composer-dock"
       >
-        <div className="max-w-4xl mx-auto">
+        <div className="studio-reading-column mx-auto">
           <LiveRuntimePanel
             ref={liveRuntimeRef}
             sessionId={sessionId}

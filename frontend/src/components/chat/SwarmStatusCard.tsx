@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { memo } from "react";
+import { memo, useState } from "react";
 import { Clock, Users } from "lucide-react";
 import { SwarmDashboard } from "@/components/chat/SwarmDashboard";
 import {
@@ -8,9 +8,55 @@ import {
   type ManifestTranslation,
 } from "@/lib/swarmI18n";
 import type { SwarmRunStatus } from "@/types/agent";
+import { api } from "@/lib/api";
+import { MarkdownContent } from "./MessageBubble";
 
 interface Props {
   status: SwarmRunStatus;
+}
+
+function TeamReport({ runId }: { runId: string }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [report, setReport] = useState("");
+  const [state, setState] = useState<"idle" | "loading" | "ready" | "empty" | "error">("idle");
+
+  async function loadReport() {
+    setState("loading");
+    try {
+      const result = await api.getSwarmRun(runId);
+      const text = typeof result.final_report === "string" ? result.final_report.trim() : "";
+      setReport(text);
+      setState(text ? "ready" : "empty");
+    } catch {
+      setState("error");
+    }
+  }
+
+  return (
+    <details className="mt-3 border-t pt-2" onToggle={(event) => {
+      const expanded = event.currentTarget.open;
+      setOpen(expanded);
+      if (expanded && state === "idle") void loadReport();
+    }}>
+      <summary className="cursor-pointer text-sm font-medium text-primary">
+        {t("swarmStatus.teamDraft")}
+      </summary>
+      {open && <div className="mt-2" aria-busy={state === "loading"}>
+        {state === "loading" && <span role="status">{t("settings.loading")}</span>}
+        {state === "error" && <button type="button" className="text-sm underline" onClick={() => void loadReport()}>
+          {t("swarmStatus.retryDraft")}
+        </button>}
+        {state === "empty" && <span>{t("swarmStatus.noDraft")}</span>}
+        {state === "ready" && <>
+          <p className="mb-2 text-xs text-muted-foreground">{t("swarmStatus.draftSource")}</p>
+          <div className="max-h-[65dvh] overflow-auto overscroll-contain" tabIndex={0}>
+            <MarkdownContent content={report} />
+          </div>
+        </>}
+      </div>}
+    </details>
+  );
 }
 
 function LayerStepper({
@@ -182,6 +228,7 @@ export const SwarmStatusCard = memo(function SwarmStatusCard({ status }: Props) 
           emptyStatus={localizeStatus(status.status, t)}
           isActive={isActive}
         />
+        {status.status === "completed" && status.runId && <TeamReport key={status.runId} runId={status.runId} />}
       </div>
     </div>
   );

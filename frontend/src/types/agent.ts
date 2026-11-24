@@ -43,8 +43,10 @@ export interface AgentMessage {
   content: string;
   tool?: string;
   args?: Record<string, string>;
-  status?: "running" | "ok" | "error";
+  status?: ToolStepStatus;
   elapsed_ms?: number;
+  /** The attempt ended with a partial fallback, not a complete answer. */
+  degraded?: boolean;
   timestamp: number;
   runId?: string;
   swarmRunId?: string;
@@ -58,11 +60,14 @@ export interface AgentMessage {
 }
 
 /** Tool call tracking entry */
+export type ToolFailureOutcome = "error" | "needs_resolution" | "no_data";
+export type ToolStepStatus = "running" | "ok" | ToolFailureOutcome;
+
 export interface ToolCallEntry {
   id: string;
   tool: string;
   arguments: Record<string, string>;
-  status: "running" | "ok" | "error";
+  status: ToolStepStatus;
   preview?: string;
   elapsed_ms?: number;
   /** Live elapsed seconds while the tool is running (heartbeat). */

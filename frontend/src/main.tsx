@@ -9,6 +9,8 @@ import { AVATAR_RESIZE_TARGET, backgroundResizeTarget } from "./lib/imageResize"
 import { compactStoredImage, IMAGE_STORAGE_KEYS } from "./lib/storage";
 import "highlight.js/styles/github-dark-dimmed.min.css";
 import "./index.css";
+import "./styles/studio.css";
+import "./styles/chat-studio.css";
 
 // Re-encode any image stored before downscaling existed. A legacy
 // full-resolution blob can occupy the whole localStorage quota on its own,

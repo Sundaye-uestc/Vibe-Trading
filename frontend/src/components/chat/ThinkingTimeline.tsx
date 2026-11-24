@@ -36,7 +36,7 @@ function rebuildLegacyActivity(
       step.tool === message.tool && step.status === "running"
     )) ?? [...steps].reverse().find((step) => step.tool === message.tool);
     if (existing) {
-      existing.status = message.status === "error" ? "error" : "ok";
+      existing.status = message.status ?? "ok";
       existing.elapsed_ms = message.elapsed_ms;
       existing.preview = message.content;
     }

@@ -1,4 +1,5 @@
 import i18n from "@/i18n";
+import type { ToolFailureOutcome } from "@/types/agent";
 import { authHeaders, withAuthTicket } from "@/lib/apiAuth";
 import type {
   OptionsChainResponse,
@@ -500,7 +501,7 @@ export const api = {
       body: JSON.stringify({ preset_name, user_vars }),
     }),
   listSwarmRuns: () => request<SwarmRunSummary[]>("/swarm/runs"),
-  getSwarmRun: (id: string) => request<Record<string, unknown>>(`/swarm/runs/${id}`),
+  getSwarmRun: (id: string) => request<Record<string, unknown>>(`/swarm/runs/${encodeURIComponent(id)}`),
   swarmSseUrl: (id: string) => withAuthTicket(`${BASE}/swarm/runs/${id}/events`),
   cancelSwarmRun: (id: string) =>
     request<{ status: string }>(`/swarm/runs/${id}/cancel`, { method: "POST" }),
@@ -1860,6 +1861,7 @@ export interface MessageItem {
 export interface ToolTrailItem {
   tool: string;
   status: "running" | "ok" | "error";
+  outcome?: ToolFailureOutcome;
   arguments?: Record<string, string>;
   elapsed_ms?: number;
   preview?: string;

@@ -220,6 +220,7 @@ def fetch_market_data(
     refresh_source_order_overrides()
 
     results: dict[str, Any] = {}
+    provider_failure = False
     provenance: dict[str, dict[str, Any]] = {}
     result_aliases = {
         code: code.split(":", 1)[1]
@@ -268,6 +269,7 @@ def fetch_market_data(
         partially successful attempt no longer stops the walk: symbols the
         loader omitted are retried down the chain and merged in.
         """
+        nonlocal provider_failure
         chain = _chain_for(src, market)
         # An env-configured order override (MARKET_DATA_ORDER_<MARKET>, set
         # via the Settings page) rewrites the attempt order for auto-detected
@@ -313,6 +315,7 @@ def fetch_market_data(
                 logger.debug("loader %r unavailable: %s", attempt_src, exc)
                 continue
             except Exception as exc:  # noqa: BLE001 — resolver may raise for non-network reasons
+                provider_failure = True
                 logger.debug("loader %r resolver failed: %s", attempt_src, exc)
                 continue
             try:
@@ -330,8 +333,10 @@ def fetch_market_data(
                     if isinstance(frame, pd.DataFrame)
                     else frame
                     for code, frame in (partial or {}).items()
+                    if frame is not None and not getattr(frame, "empty", False)
                 }
             except Exception as exc:  # noqa: BLE001 — contained per-symbol fallback
+                provider_failure = True
                 logger.error(
                     "market-data loader %r failed for %s; trying next source in chain: %s",
                     attempt_src, remaining, exc,
@@ -486,6 +491,8 @@ def fetch_market_data(
                     unresolved.remove(code)
 
     if unresolved:
+        if not results and provider_failure:
+            results["_source_error"] = True
         results["_unresolved"] = unresolved
     if include_provenance and provenance:
         results["_provenance"] = provenance

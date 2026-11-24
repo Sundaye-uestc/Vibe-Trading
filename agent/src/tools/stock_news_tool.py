@@ -302,6 +302,7 @@ class StockNewsTool(BaseTool):
     """Read-only per-stock and global financial news headlines."""
 
     name = "get_stock_news"
+    market_identity_argument = "code"
     cache_ttl = 300.0  # read-only fetch; identical args are stable within a run
     description = (
         "Fetch recent financial news headlines, read-only and no auth. Markets: "
@@ -416,7 +417,7 @@ class StockNewsTool(BaseTool):
             return self._stock_via_yahoo(code, query, limit)
         return self._error(
             f"unsupported market for code {code!r}; expected suffix in "
-            f"{_EM_SUFFIXES + _YAHOO_SUFFIXES}"
+            f"{_EM_SUFFIXES + _YAHOO_SUFFIXES}", code="unsupported_news_market",
         )
 
     def _stock_via_a_share(self, code: str, query: str, limit: int) -> str:
@@ -484,7 +485,7 @@ class StockNewsTool(BaseTool):
         )
 
     @staticmethod
-    def _error(message: str) -> str:
+    def _error(message: str, *, code: str | None = None) -> str:
         """Render a failure envelope as a JSON string.
 
         Args:
@@ -493,4 +494,4 @@ class StockNewsTool(BaseTool):
         Returns:
             ``{"ok": false, "error": message}`` as a JSON string.
         """
-        return json.dumps({"ok": False, "error": message}, ensure_ascii=False)
+        return json.dumps({"ok": False, "error": message, **({"error_code": code} if code else {})}, ensure_ascii=False)

@@ -684,6 +684,7 @@ class FinancialStatementsTool(BaseTool):
     """Fetch a stock's three financial statements or key per-period indicators."""
 
     name = "get_financial_statements"
+    market_identity_argument = "code"
     cache_ttl = 300.0  # read-only fetch; identical args are stable within a run
     description = (
         "Fetch a single stock's financial statements: balance sheet, income "

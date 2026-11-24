@@ -35,7 +35,9 @@ from typing import Any, Dict, List, Optional
 from backtest.loaders import eastmoney_client, sec_edgar_client, yahoo_client
 from backtest.loaders._http import resolve_min_interval, throttled_get
 from src.agent.tools import BaseTool
+from src.instrument_query import exact_candidate_match, matches_instrument_kind, qualified_symbol
 from src.market_data import FIAT_CODES, canonical_fx_pair
+from src.us_indices import US_INDEX_NAMES, exact_us_index_symbol
 
 # Back-compat alias: the search tool's historical name for the shared
 # fiat-pair canonicalizer (search, fetch and grounding share one definition).
@@ -175,6 +177,16 @@ _MARKET_BY_SUFFIX: Dict[str, str] = {
     "US": "us",
 }
 
+# Native chart exchange codes for listings with a venue suffix. An unknown
+# venue gets the ordinary search, without an inferred cross-market fallback.
+_US_EXCHANGES = frozenset({"NMS", "NGM", "NCM", "NYQ", "ASE", "PCX", "BTS", "PNK", "OQX", "OQB"})
+_YAHOO_LISTING_EXCHANGES = {
+    "US": _US_EXCHANGES, "HK": {"HKG"}, "SH": {"SHH"}, "SZ": {"SHZ"},
+    "TO": {"TOR"}, "V": {"VAN"}, "L": {"LSE"}, "PA": {"PAR"}, "DE": {"GER"},
+    "T": {"JPX"}, "AX": {"ASX"}, "NS": {"NSI"}, "BO": {"BSE"},
+    "KS": {"KSC"}, "KQ": {"KOE"},
+}
+
 # Hard caps so a broad query cannot bloat the envelope.
 _MAX_LIMIT = 25
 _DEFAULT_LIMIT = 10
@@ -205,7 +217,8 @@ class SymbolSearchTool(BaseTool):
         "with their market, in the project's symbol convention (A-shares "
         "600519.SH, Hong Kong 00700.HK, U.S. AAPL.US, Canada TD.TO/PNG.V, plus "
         "crypto/index/FX from "
-        "Yahoo). Exact crypto pairs are checked against the active Binance "
+        "Yahoo). Common US benchmark names and tickers (e.g. Nasdaq Composite, "
+        "纳指100) resolve from the built-in index catalog. Exact crypto pairs are checked against the active Binance "
         "profile; other queries search Eastmoney (China/HK/US names and tickers) and Yahoo "
         "(global) and, for U.S. equities, attaches the SEC CIK. Use this to turn "
         "an ambiguous name into a concrete symbol before calling get_market_data "
@@ -255,6 +268,13 @@ class SymbolSearchTool(BaseTool):
             return _error("'query' is required and must be a non-empty string")
 
         limit = _clamp_limit(kwargs.get("limit", _DEFAULT_LIMIT))
+        index_symbol = exact_us_index_symbol(query)
+        if index_symbol:
+            candidate = {
+                "symbol": index_symbol, "name": US_INDEX_NAMES[index_symbol][1],
+                "market": "index", "type": "index", "source": "index_catalog",
+            }
+            return _search_result(query, [candidate], {"index_catalog": "ok"})
 
         candidates: List[Dict[str, Any]] = []
         sources: Dict[str, str] = {}
@@ -279,10 +299,14 @@ class SymbolSearchTool(BaseTool):
                 sources[public_source] = public_status or "ok"
                 candidates.extend(public_hits)
 
-        em_hits, sources["eastmoney"] = _search_eastmoney(query)
+        qualified = qualified_symbol(query)
+        regional_query = qualified or query
+        if qualified and qualified.endswith((".US", ".SH", ".SZ", ".BJ", ".HK")):
+            regional_query = qualified.rsplit(".", 1)[0]
+        em_hits, sources["eastmoney"] = _search_eastmoney(regional_query)
         candidates.extend(em_hits)
 
-        tc_hits, sources["tencent"] = _search_tencent(query)
+        tc_hits, sources["tencent"] = _search_tencent(regional_query)
         candidates.extend(tc_hits)
 
         # An explicit FX pair searches Yahoo by its canonical ``XXXYYY=X``
@@ -291,7 +315,17 @@ class SymbolSearchTool(BaseTool):
         # Yahoo (the earlier "GBP/USD -> 0 candidates" failure) never turns a
         # canonical pair into nothing.
         fx_pair = _canonical_fx_pair(query)
-        yh_hits, sources["yahoo"] = _search_yahoo(fx_pair or query)
+        yahoo_query = fx_pair or query
+        if qualified:
+            yahoo_query = (qualified[:-3] + ".SS" if qualified.endswith(".SH")
+                           else yahoo_client.map_symbol(qualified))
+        yh_hits, sources["yahoo"] = _search_yahoo(yahoo_query, qualified=qualified)
+        # The chart loader requests BRK.B.US as BRK-B. Preserve a proven
+        # share-class alias on the return trip, scoped to this exact US query.
+        if qualified and qualified.endswith(".US"):
+            for row in yh_hits:
+                if row["market"] == "us" and row["symbol"] == f"{yahoo_query}.US":
+                    row["symbol"] = qualified
         candidates.extend(yh_hits)
         if fx_pair is not None:
             pair_no_x = fx_pair[:-2]
@@ -333,16 +367,8 @@ class SymbolSearchTool(BaseTool):
                 for candidate in candidates
                 if _metal_or_fx_legs(str(candidate.get("symbol") or "")) == query_legs
             ]
-        elif query.strip().upper().endswith("=F"):
-            # Yahoo's continuous-front-month futures notation is likewise an
-            # exact assertion: ``GC=F`` is gold futures, and a near-string hit
-            # is a different contract.
-            candidates = [
-                candidate
-                for candidate in candidates
-                if str(candidate.get("symbol") or "").strip().upper()
-                == query.strip().upper()
-            ]
+        elif qualified:
+            candidates = [candidate for candidate in candidates if exact_candidate_match(query, candidate)]
 
         # Canada fail-fast: a Canadian ticker must resolve to the Canadian venue
         # only. Yahoo also returns the US OTC alias of the same company (e.g.
@@ -356,26 +382,28 @@ class SymbolSearchTool(BaseTool):
                 if _is_canadian_symbol(str(c.get("symbol") or ""))
             ]
 
-        merged = _merge_candidates(candidates)
+        matching_kind = [candidate for candidate in candidates if matches_instrument_kind(query, candidate)]
+        # Keep alternatives visible on a type mismatch, but mark the search as
+        # ambiguous below. A provider returned lookalikes, not a clean absence.
+        merged = _merge_candidates(matching_kind or candidates)
         merged, sources["sec_edgar"] = _enrich_us_cik(merged)
         if sources["sec_edgar"] == _NO_US:
             del sources["sec_edgar"]
-        merged = merged[:limit]
+        exact = [row for row in merged if exact_candidate_match(query, row)]
+        if exact:
+            merged = exact + [row for row in merged if row not in exact]
+        hidden_rivals = len(merged) > limit and (not exact or len(exact) > limit)
+        return _search_result(query, merged[:limit], sources, hidden_rivals=hidden_rivals)
 
-        return json.dumps(
-            {
-                "ok": True,
-                "market": "multi",
-                "source": "symbol_search",
-                "data": {
-                    "query": query,
-                    "count": len(merged),
-                    "candidates": merged,
-                    "sources": sources,
-                },
-            },
-            ensure_ascii=False,
-        )
+
+def _search_result(query: str, candidates: list[dict], sources: dict[str, str], *, hidden_rivals: bool = False) -> str:
+    return json.dumps({
+        "ok": True,
+        "market": "multi",
+        "source": "symbol_search",
+        "data": {"query": query, "count": len(candidates), "candidates": candidates, "sources": sources,
+                 **({"unresolved_truncation": True} if hidden_rivals else {})},
+    }, ensure_ascii=False)
 
 
 def _clamp_limit(value: Any) -> int:
@@ -841,7 +869,7 @@ def _tencent_candidate(row: List[str]) -> Optional[Dict[str, Any]]:
     }
 
 
-def _search_yahoo(query: str) -> tuple[List[Dict[str, Any]], str]:
+def _search_yahoo(query: str, *, qualified: str | None = None) -> tuple[List[Dict[str, Any]], str]:
     """Query Yahoo's search endpoint and normalize the quote candidates.
 
     Args:
@@ -861,7 +889,17 @@ def _search_yahoo(query: str) -> tuple[List[Dict[str, Any]], str]:
         # sources, and an unsupported query shape must not read as an outage.
         return [], f"{_SKIPPED}non-ASCII query is not supported by this source"
     try:
-        quotes = yahoo_client.search(query)
+        if qualified and qualified.endswith("=F"):
+            quotes = yahoo_client.search(query, exact_types=frozenset({"FUTURE"}))
+        elif qualified and qualified.startswith("^"):
+            quotes = yahoo_client.search(query, exact_types=frozenset({"INDEX"}))
+        elif qualified and qualified.endswith("=X"):
+            quotes = yahoo_client.search(query, exact_types=frozenset({"CURRENCY"}), exact_exchanges=frozenset({"CCY"}))
+        elif qualified and (venues := _YAHOO_LISTING_EXCHANGES.get(qualified.rsplit(".", 1)[-1])):
+            quotes = yahoo_client.search(query, exact_types=frozenset({"EQUITY", "ETF", "MUTUALFUND", "INDEX"}),
+                                         exact_exchanges=frozenset(venues))
+        else:
+            quotes = yahoo_client.search(query)
     except Exception as exc:  # noqa: BLE001 - one source failing is non-fatal
         logger.warning("yahoo search failed for %r: %s", query, exc)
         return [], f"yahoo search failed: {exc}"
@@ -950,7 +988,9 @@ def _from_yahoo_symbol(raw_symbol: str, quote: Dict[str, Any]) -> tuple[str, str
         return raw_symbol, "global"
     if raw_symbol.startswith("^"):
         return raw_symbol, "index"
-    if quote_type == "EQUITY" and "." not in raw_symbol and "-" not in raw_symbol:
+    us_venue = str(quote.get("exchange") or "").upper() in _US_EXCHANGES
+    if "." not in raw_symbol and (quote_type == "EQUITY" and "-" not in raw_symbol
+                                  or us_venue and quote_type in {"EQUITY", "ETF"}):
         return f"{upper}.US", "us"
     # Crypto, indices, FX, ETFs on non-HK exchanges: keep Yahoo's native symbol.
     return raw_symbol, "global"

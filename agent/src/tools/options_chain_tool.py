@@ -38,6 +38,7 @@ class OptionsChainTool(BaseTool):
     """Fetch a US equity option chain (calls + puts) with greeks-grade fields."""
 
     name = "get_options_chain"
+    market_identity_argument = "ticker"
     description = (
         "Fetch the US-listed options chain (calls and puts) for one expiration "
         "via Yahoo Finance: per-contract strike, bid/ask, last price, volume, "

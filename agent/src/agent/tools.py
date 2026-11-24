@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
-from typing import Any, Dict, List, Optional
 
 
 class BaseTool(ABC):
@@ -25,6 +25,9 @@ class BaseTool(ABC):
     parameters: Dict[str, Any] = {}
     repeatable: bool = False
     is_readonly: bool = True
+    # Opt in only for read tools whose provider understands a canonical
+    # security identifier. Execution/trading tools never infer permission here.
+    market_identity_argument: str | None = None
     # Pure, side-effect-free computation: identical args always produce the
     # same result, so the loop may serve repeated identical calls from cache
     # instead of re-executing them (financial_rigor calc/verify, etc.).

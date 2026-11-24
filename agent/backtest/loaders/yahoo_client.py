@@ -419,11 +419,20 @@ def _parse_options(payload: Any, yahoo_symbol: str) -> Dict[str, Any]:
     return results[0] or {}
 
 
-def search(query: str) -> List[Dict[str, Any]]:
+def search(
+    query: str,
+    *,
+    exact_types: frozenset[str] = frozenset(),
+    exact_exchanges: frozenset[str] = frozenset(),
+) -> List[Dict[str, Any]]:
     """Look up matching instruments via the v1 search endpoint.
 
     Args:
         query: Free-text query (ticker fragment or company name).
+        exact_types: When a qualified identifier is supplied, acceptable
+            native instrument types. Permit a chart metadata lookup if
+            autocomplete cannot identify that exact instrument.
+        exact_exchanges: Required Yahoo exchange codes for a qualified venue.
 
     Returns:
         The ``quotes`` list (each a dict with ``symbol``, ``shortname``,
@@ -432,14 +441,64 @@ def search(query: str) -> List[Dict[str, Any]]:
     Raises:
         requests.RequestException: On a network/HTTP failure.
     """
-    payload = throttled_get_json(
-        _SEARCH_BASE,
-        host_key=HOST_KEY,
-        min_interval=_min_interval(),
-        params={"q": query},
-    )
+    try:
+        payload = throttled_get_json(
+            _SEARCH_BASE, host_key=HOST_KEY, min_interval=_min_interval(),
+            params={"q": query},
+        )
+    except (requests.RequestException, ValueError):
+        if not exact_types:
+            raise
+        # The search and chart services can fail independently. Exact chart
+        # metadata still answers the qualified query when search is down.
+        payload = {}
     quotes = (payload or {}).get("quotes") or []
-    return [quote for quote in quotes if isinstance(quote, dict)]
+    rows = [quote for quote in quotes if isinstance(quote, dict)]
+    if not exact_types:
+        return rows
+
+    # The caller knows this is a complete provider ticker. A name search
+    # cannot establish its identity via a similarly spelled derivative.
+    symbol = query.upper()
+
+    def matches(row: Dict[str, Any]) -> bool:
+        exchange = row.get("exchange")
+        return (row.get("symbol") == symbol
+                and str(row.get("quoteType") or "").upper() in exact_types
+                and isinstance(exchange, str) and bool(exchange.strip())
+                and (not exact_exchanges or exchange.strip().upper() in exact_exchanges))
+
+    exact = [row for row in rows if matches(row)]
+    if exact:
+        return exact
+
+    try:
+        chart_payload = throttled_get_json(
+            f"{_CHART_BASE}/{symbol}", host_key=HOST_KEY, min_interval=_min_interval(),
+            params={"interval": "1d", "range": "1d"},
+        )
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            return []
+        raise
+    chart = (chart_payload or {}).get("chart") or {}
+    if chart.get("error"):
+        problem = chart["error"]
+        if isinstance(problem, dict) and problem.get("code") == "Not Found":
+            return []
+        raise ValueError(f"Yahoo chart metadata unavailable for {symbol}")
+    results = chart.get("result") or []
+    if len(results) != 1 or not isinstance(results[0], dict):
+        return []
+    meta = results[0].get("meta")
+    if not isinstance(meta, dict):
+        return []
+    quote = {
+        "symbol": meta.get("symbol"), "quoteType": meta.get("instrumentType"),
+        "exchange": meta.get("exchangeName"),
+        "shortname": meta.get("shortName") or meta.get("longName"),
+    }
+    return [quote] if matches(quote) else []
 
 
 def search_news(query: str, count: int) -> List[Dict[str, Any]]:

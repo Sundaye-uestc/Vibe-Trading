@@ -229,6 +229,7 @@ class TechnicalIndicatorTool(BaseTool):
     """
 
     name = "technical_indicators"
+    market_identity_argument = "symbol"
     cache_ttl = 300.0  # read-only fetch; identical args are stable within a run
     description = (
         "Compute common technical indicators (RSI, MACD, Bollinger Bands, "

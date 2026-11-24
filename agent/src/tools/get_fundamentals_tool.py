@@ -65,6 +65,7 @@ class GetFundamentalsTool(BaseTool):
     """Fetch PIT-aligned fundamental fields as daily wide panels."""
 
     name = "get_fundamentals"
+    market_identity_argument = "symbols"
     description = (
         "US-only SEC XBRL fundamentals; not for A-shares or Hong Kong stocks. "
         "Fetch PIT-safe fundamental fields as daily wide panels aligned by filed "

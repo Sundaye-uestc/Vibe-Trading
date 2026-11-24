@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from src.us_indices import US_INDEX_NAMES
+
 _CLAUSE_BOUNDARY_RE = re.compile(r"[,，;；。.!！?？\n]")
 _MARKET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -145,6 +147,8 @@ class ResolutionContext:
 def candidate_market(candidate: Mapping[str, Any]) -> str | None:
     """Normalize a resolver candidate's market without provider coupling."""
     symbol = str(candidate.get("symbol") or "").strip().upper()
+    if symbol in US_INDEX_NAMES:
+        return "us"
     if symbol.endswith(".SS"):
         symbol = f"{symbol[:-3]}.SH"
     suffix = symbol.rsplit(".", 1)[-1] if "." in symbol else ""

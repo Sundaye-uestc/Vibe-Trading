@@ -77,6 +77,7 @@ def test_loader_exception_is_contained_not_lost(monkeypatch):
     monkeypatch.setattr(mcp_server, "_get_loader", lambda src: _BoomLoader)
     out = _call(["AAA.US", "BBB.US"])  # must not raise an opaque MCP error
     assert sorted(out.get("_unresolved", [])) == ["AAA.US", "BBB.US"]
+    assert out["_source_error"] is True
 
 
 def test_partial_loader_only_missing_codes_unresolved(monkeypatch):

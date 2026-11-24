@@ -12,8 +12,6 @@ import json
 from typing import Any
 from unittest.mock import patch
 
-import pytest
-
 from backtest.loaders import eastmoney_client, yahoo_client
 from src.tools import stock_news_tool
 from src.tools.stock_news_tool import (
@@ -221,6 +219,7 @@ class TestExecuteError:
         out = json.loads(StockNewsTool().execute(code="BTC-USDT"))
         assert out["ok"] is False
         assert "unsupported market" in out["error"]
+        assert out["error_code"] == "unsupported_news_market"
 
     def test_eastmoney_http_failure_envelope(self) -> None:
         tool = StockNewsTool()

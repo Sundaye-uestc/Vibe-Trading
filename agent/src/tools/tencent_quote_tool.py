@@ -70,6 +70,7 @@ class TencentQuoteTool(BaseTool):
     """Fetch real-time A-share quotes from Tencent Finance (HTTP, never IP-banned)."""
 
     name = "tencent_quote"
+    market_identity_argument = "codes"
     cache_ttl = 300.0  # read-only fetch; identical args are stable within a run
     description = (
         "Get real-time A-share quotes from Tencent Finance (HTTP, zero auth, NO IP-ban risk). "

@@ -64,6 +64,7 @@ class MarketDataTool(BaseTool):
     """Fetch normalized OHLCV data through repository loaders."""
 
     name = "get_market_data"
+    market_identity_argument = "codes"
     cache_ttl = 300.0  # read-only fetch; identical args are stable within a run
     description = (
         "Fetch normalized OHLCV market data through the repository loader layer. "

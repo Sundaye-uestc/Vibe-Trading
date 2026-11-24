@@ -239,6 +239,7 @@ class StockProfileTool(BaseTool):
     """Company profile: key stats, analyst estimates, and ownership."""
 
     name = "get_stock_profile"
+    market_identity_argument = "ticker"
     description = (
         "Fetch a read-only company profile for a US, Hong Kong, or UK (LSE .L) "
         "listing from Yahoo Finance: valuation key statistics, analyst price "

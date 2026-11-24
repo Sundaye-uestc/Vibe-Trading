@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
-# ci_grep_gates.sh — repo-wide safety floor enforced in CI.
+# Repo-wide static checks for local development.
 #
 # Four gates run sequentially; any failure exits non-zero and names the
 # offending files. Run locally before pushing:
 #
 #     bash tools/ci_grep_gates.sh
-#
-# CONTRIBUTING.md references this script as the source of truth for the
-# pre-commit / CI safety checks (do NOT inline these patterns elsewhere —
-# update this file and let CI fan it out).
 #
 # Gates:
 #   (a) No `yaml.load(` calls that bypass `safe_load` (RCE risk).

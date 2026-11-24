@@ -15,7 +15,7 @@ This layer is stacked on the desktop lifecycle shell and adds only:
 - No optional IM/channel extra is installed.
 - Personal WeChat/Weixin QR pairing is not included.
 - No broker-specific optional dependency is installed.
-- The review workflow produces an unsigned artifact only; it does not publish a release.
+- The local review build produces an unsigned installer.
 
 Users can install an optional adapter later from a source/developer environment.
 The desktop runtime does not expose a package installer UI in this change.
@@ -87,7 +87,7 @@ injected values back to dotenv.
 
 ## Unsigned limitation
 
-Local and pull-request artifacts are unsigned. Windows SmartScreen may warn
+Local review artifacts are unsigned. Windows SmartScreen may warn
 when they are launched. Code signing and release ownership remain with the
 community publisher unless HKUDS explicitly takes them over later.
 
@@ -104,10 +104,9 @@ The signed command fails closed when either signing input is missing and then
 enables Electron Builder's `forceCodeSigning` gate. It then verifies that
 Windows reports both the packaged application executable and the resulting
 installer's Authenticode status as `Valid`. The certificate and password must
-come from CI secrets or an equivalent external secret store; they must never
+come from an external secret store; they must never
 be committed. The generic `CSC_LINK` and `CSC_KEY_PASSWORD` names remain
-supported as fallbacks. This PR does not add a release workflow or upload an
-artifact.
+supported as fallbacks.
 
 ## Dependency-audit note
 
@@ -115,18 +114,17 @@ artifact.
 Electron Builder is a build-time-only development dependency and its current
 transitive tree reports high-severity audit findings in glob/minimatch-related
 tooling. Those packages are not copied into the packaged application, but the
-review workflow still treats the lockfile as trusted build input. This should
+local packaging process still treats the lockfile as trusted build input. This should
 be re-audited whenever Electron Builder publishes a repaired dependency tree.
 
-## Native archive extraction and CI visibility
+## Native archive extraction
 
 The GTK asset remains checksum-pinned, but the build never executes its legacy
 NSIS self-extractor. A current `7z.exe` (available on `PATH` or under the
 standard Program Files location) reads the verified asset as an archive under
 a two-minute process timeout, after which the build copies only the explicit
-WeasyPrint DLL/font closure. GitHub's `windows-2025` image supplies 7-Zip and
-runs the complete packaging path for relevant pull requests and pushes to
-`main`, so default-branch packaging regressions are visible.
+WeasyPrint DLL/font closure. Install 7-Zip on the Windows build host before
+running the local packaging commands above.
 
 ## Local validation record
 

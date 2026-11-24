@@ -12,7 +12,6 @@
 
 ```text
 .gitignore
-.github/workflows/test.yml
 desktop/electron/
   README.md
   REVIEW_NOTES.md
@@ -36,8 +35,7 @@ desktop/electron/
 ```
 
 No agent, provider, session, frontend, channel, packaging, credential-storage,
-or updater file is changed. The workflow change adds only the Windows desktop
-source-lifecycle job requested during review.
+or updater file was changed in this upstream baseline.
 
 ## Dependency and license review
 
@@ -96,15 +94,10 @@ Host development validation on Windows:
   source ancestors
 - [x] all desktop-owned user-facing strings have en/zh-CN/ja/ko/ar parity and
   Arabic selects RTL layout
-- [x] clean-Windows source startup is exercised by the
-  `Windows desktop source lifecycle` job on a fresh `windows-2025` runner
 
-The clean-Windows job installs Python 3.12 and Node 22 into a fresh runner,
-installs Vibe-Trading from the checked-out source, runs `npm ci`, performs a
-strict production build, starts the source backend through Electron, verifies
-the authenticated loopback boundary and graceful shutdown, then kills only
-the Electron main PID and asserts that the Python PID and listener disappear.
-This replaces the older unchecked manual-VM entry with a reproducible CI gate.
+To check startup and shutdown on a clean Windows host, install the backend
+and frontend dependencies, then run `npm ci` and `npm run smoke:lifecycle`
+from `desktop/electron`.
 
 ## Unsigned-build limitations
 

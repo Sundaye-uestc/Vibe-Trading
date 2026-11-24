@@ -26,6 +26,7 @@ from src.config.accessor import get_env_config
 from src.config.schema import AgentConfig
 from src.providers.llm import _ensure_dotenv, uses_responses_api
 from src.swarm import grounding
+from src.swarm.market_evidence import SwarmMarketEvidence
 from src.swarm.models import (
     RunStatus,
     SwarmAgentSpec,
@@ -279,6 +280,7 @@ class SwarmRuntime:
                 local-tool-only behavior byte-for-byte.
         """
         self._store = store
+        self.market_evidence: SwarmMarketEvidence | None = None
         self._max_workers = max_workers
         self._agent_config = agent_config
         self._cancel_events: dict[str, threading.Event] = {}
@@ -1142,6 +1144,7 @@ class SwarmRuntime:
                 grounding_block=grounding_block,
                 agent_config=self._agent_config,
                 cancel_event=cancel_event,
+                **({"market_evidence": self.market_evidence} if self.market_evidence is not None else {}),
             )
 
             cumulative_input_tokens += result.input_tokens

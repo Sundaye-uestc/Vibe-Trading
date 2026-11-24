@@ -290,7 +290,7 @@ class TestRecoveryPrompts:
         assert "get_market_data" in prompt
         assert "Do NOT ask the user to confirm or continue" in prompt
 
-    def test_correction_asks_when_recovery_exhausted(self, tmp_path: Path) -> None:
+    def test_exhausted_recovery_only_asks_for_an_ambiguous_task(self, tmp_path: Path) -> None:
         ledger = _ledger(tmp_path)
         validation = ledger.validate_final_answer("机器人ETF 现价 1.171。")
         for _ in range(MAX_GROUNDING_RECOVERY_ROUNDS):
@@ -299,7 +299,8 @@ class TestRecoveryPrompts:
         prompt = ledger.correction_prompt(validation)
 
         assert "Do NOT ask the user" not in prompt
-        assert "ask for clarification" in prompt
+        assert "Ask for clarification only when" in prompt
+        assert "finish the supported parts" in prompt
 
     def test_recovery_prompt_points_at_the_tool(self, tmp_path: Path) -> None:
         ledger = _ledger(tmp_path)
@@ -383,6 +384,11 @@ def test_loop_runs_recovery_before_fallback(
     # Symbol resolution budget is two: two recovery turns, then fallback.
     assert [e.get("action") for e in recovery_entries] == ["search_symbol", "search_symbol"]
     assert llm.calls >= 3
+    # Repeated data recovery also removes rejected draft examples without
+    # deleting the source/user messages or suppressing the recovery action.
+    assert not any(message.get("role") == "assistant"
+                   and message.get("content") == "机器人ETF 现价 1.171，建议买入。"
+                   for message in llm.messages_history[2])
     # Recovery and correction steering must never be mid-conversation system
     # messages: Anthropic only accepts a single leading system block.
     assert_system_messages_only_lead(llm.messages_history)

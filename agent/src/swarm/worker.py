@@ -22,6 +22,8 @@ from src.agent.tool_loading import DeferredToolRegistry, prepare_registry, reque
 from src.agent.tools import ToolRegistry
 from src.agent.context_budget import is_context_overflow
 from src.agent.result_artifacts import deliver_tool_result
+from src.swarm.market_evidence import SwarmMarketEvidence
+from src.tools.market_data_tool import MarketDataTool
 from src.config.schema import AgentConfig
 from src.providers.chat import ChatLLM, LLMResponse, ProviderStreamError
 from src.providers.content_filter import (
@@ -470,6 +472,7 @@ def run_worker(
     grounding_block: str = "",
     agent_config: AgentConfig | None = None,
     cancel_event: threading.Event | None = None,
+    market_evidence: SwarmMarketEvidence | None = None,
 ) -> WorkerResult:
     """Run one worker task, releasing the per-task LLM client on exit.
 
@@ -520,6 +523,7 @@ def run_worker(
             grounding_block=grounding_block,
             agent_config=agent_config,
             cancel_event=cancel_event,
+            market_evidence=market_evidence,
         )
     finally:
         llm.close()
@@ -538,6 +542,7 @@ def _run_worker_impl(
     *,
     llm: ChatLLM,
     cancel_event: threading.Event | None = None,
+    market_evidence: SwarmMarketEvidence | None = None,
 ) -> WorkerResult:
     """Execute a single worker task using a lightweight ReAct loop.
 
@@ -1070,6 +1075,9 @@ def _run_worker_impl(
             # truncation must not cut away the label identifying a credential.
             result = redact_tool_result(result)
             result_is_error = _is_error_result(result)
+            if (market_evidence is not None and tc.name == "get_market_data" and not result_is_error
+                    and isinstance(registry.get(tc.name), MarketDataTool)):
+                market_evidence.capture(run_dir.name, agent_id, task_id, tc.id, args, result)
             if tc.name not in {"load_skill", "load_tools"} and not result_is_error:
                 data_tool_calls += 1
             tc_elapsed = time.monotonic() - tc_start

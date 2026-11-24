@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from typing import Any
@@ -756,6 +755,7 @@ class SwarmTool(BaseTool):
 
         from src.config import load_swarm_agent_config
         from src.swarm.runtime import SwarmRuntime
+        from src.swarm.market_evidence import SwarmMarketEvidence
         from src.swarm.store import SwarmStore, swarm_runs_root
 
         swarm_base_dir = swarm_runs_root()
@@ -772,6 +772,8 @@ class SwarmTool(BaseTool):
             max_workers=get_env_config().swarm.swarm_max_workers,
             agent_config=agent_config,
         )
+        evidence = SwarmMarketEvidence()
+        runtime.market_evidence = evidence
 
         pending_live_events: list[dict[str, Any]] = []
         run_id_holder: dict[str, str | None] = {"run_id": None}
@@ -845,7 +847,7 @@ class SwarmTool(BaseTool):
 
             reconciled = store.reconcile_run(loaded, write=True)
             if reconciled.status.value in ("completed", "failed", "cancelled"):
-                return _format_result(reconciled, preset, variables)
+                return _format_result(reconciled, preset, variables, market_evidence=evidence.snapshot(run_id))
 
         # Wait budget elapsed but the run is still in flight. Do NOT cancel —
         # the daemon thread keeps working and the agent can decide to wait
@@ -869,6 +871,7 @@ def _format_result(
     preset: str,
     variables: dict[str, str],
     timed_out: bool = False,
+    market_evidence: list[dict] | None = None,
 ) -> str:
     """Format a SwarmRun into a JSON result string.
 
@@ -903,6 +906,8 @@ def _format_result(
             "total_output_tokens": run.total_output_tokens,
         },
     }
+    if run.status.value == "completed" and market_evidence:
+        result["market_evidence"] = market_evidence
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 

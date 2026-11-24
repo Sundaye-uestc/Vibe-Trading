@@ -24,6 +24,7 @@ import sys
 import threading
 import time as _time
 from pathlib import Path
+from uuid import uuid4
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from src.agent.context import ContextBuilder
@@ -46,7 +47,7 @@ from src.goal.context import (
     goal_needs_continuation,
     goal_progress_tuple,
 )
-from src.providers.chat import ChatLLM, LLMRuntimeSnapshot, ProviderStreamError
+from src.providers.chat import ChatLLM, LLMRuntimeSnapshot, ProviderStreamError, ToolCallRequest
 from src.providers.content_filter import (
     CONTENT_FILTER_SKIP_MESSAGE,
     MAX_CONSECUTIVE_CONTENT_FILTER_SKIPS,
@@ -837,6 +838,23 @@ def _is_tool_success(result: str) -> bool:
     return True
 
 
+def _market_result_for_agent(result: str) -> str:
+    """Keep partial OHLC panels usable and prevent caching a completely empty read."""
+    if '"_unresolved"' not in result:
+        return result
+    try:
+        data = json.loads(result)
+    except (ValueError, TypeError):
+        return result
+    if not isinstance(data, dict) or not isinstance(data.get("_unresolved"), list) or not data["_unresolved"]:
+        return result
+    if any(not key.startswith("_") for key in data):
+        return result
+    code = "market_source_error" if data.get("_source_error") else "market_data_unavailable"
+    return json.dumps({"ok": False, "error_code": code,
+                       "error": "No requested market bars were retrieved.", **data}, ensure_ascii=False)
+
+
 # Provider tool-call markup that a model can emit as plain text on the
 # forced-text final iteration, where tool definitions are withheld. Releasing
 # it verbatim hands the user mojibake instead of an answer. Both DSML bar
@@ -1292,6 +1310,10 @@ class AgentLoop:
         goal_turn_accounted = False
         messages = context.build_messages(llm_user_message, history)
         react_trace: List[Dict[str, Any]] = []
+        # Keep rejected prose out of a later fresh rewrite. Track only the
+        # message objects added by this run, never user history or tool data.
+        grounding_revision_messages: List[Dict[str, Any]] = []
+        interpretation_only = False
 
         trace_dir = SESSIONS_DIR / session_id if session_id else run_dir
         trace = TraceWriter(trace_dir)
@@ -1516,7 +1538,7 @@ class AgentLoop:
 
                 # On last iteration, drop tool definitions to force text output
                 is_last_iteration = (iteration == self.max_iterations)
-                tool_defs = None if is_last_iteration else request_definitions(self.registry)
+                tool_defs = None if is_last_iteration or interpretation_only else request_definitions(self.registry)
                 self._tool_schema_tokens = estimate_context_tokens(tool_defs) if tool_defs else 0
                 if is_last_iteration:
                     trace.write({"type": "forced_text_only", "iter": current_iter})
@@ -1780,7 +1802,10 @@ class AgentLoop:
                             {"delta": final_content, "iter": current_iter},
                         )
                     if self._grounding is not None:
-                        validation = self._grounding.validate_final_answer(final_content)
+                        if interpretation_only:
+                            validation = self._grounding.validate_final_answer(final_content, interpretation_only=True)
+                        else:
+                            validation = self._grounding.validate_final_answer(final_content)
                         if not validation.valid:
                             trace.write_text_entry(
                                 {
@@ -1798,11 +1823,20 @@ class AgentLoop:
                                     "issues": validation.issues,
                                 }
                             )
-                            messages.append(
-                                {"role": "assistant", "content": final_content}
-                            )
+                            interpretation_only = bool(not active_goal_id and self._grounding.verified_facts_for_revision())
+                            if interpretation_only or self._grounding.validation_count >= 2:
+                                # Preserve the audit trace and source evidence,
+                                # but not rejected examples, on both repair and
+                                # read-only data recovery paths.
+                                messages[:] = [message for message in messages
+                                               if not any(message is prior for prior in grounding_revision_messages)]
+                                grounding_revision_messages.clear()
+                            else:
+                                rejected_message = {"role": "assistant", "content": final_content}
+                                messages.append(rejected_message)
+                                grounding_revision_messages.append(rejected_message)
                             recovery = self._grounding.recovery_action(validation)
-                            if recovery is not None and iteration < self.max_iterations:
+                            if recovery is not None and not interpretation_only and iteration < self.max_iterations:
                                 self._grounding.record_recovery(recovery)
                                 trace.write(
                                     {
@@ -1814,20 +1848,26 @@ class AgentLoop:
                                 react_trace.append(
                                     {"type": "grounding_recovery", "action": recovery}
                                 )
-                                messages.append(
+                                recovery_message = (
                                     {
                                         "role": "user",
                                         "content": f"<system>{self._grounding.recovery_prompt(recovery, validation)}</system>",
                                     }
                                 )
+                                messages.append(recovery_message)
+                                grounding_revision_messages.append(recovery_message)
                                 final_content = ""
                                 continue
-                            messages.append(
+                            prompt = (self._grounding.correction_prompt(validation, interpretation_only=True)
+                                      if interpretation_only else self._grounding.correction_prompt(validation))
+                            correction_message = (
                                 {
                                     "role": "user",
-                                    "content": f"<system>{self._grounding.correction_prompt(validation)}</system>",
+                                    "content": f"<system>{prompt}</system>",
                                 }
                             )
+                            messages.append(correction_message)
+                            grounding_revision_messages.append(correction_message)
                             final_content = ""
                             # One extra revision when real iteration budget remains;
                             # each revision costs one iteration, so without budget the
@@ -1838,17 +1878,28 @@ class AgentLoop:
                                 and self._grounding.validation_count < revision_cap
                             ):
                                 continue
-                            final_content = self._grounding.safe_fallback()
+                            final_content = self._grounding.safe_fallback(allow_team_excerpt=interpretation_only)
                             self._released_fallback = True
+                            self._released_fallback_reason = "grounding_incomplete: " + ", ".join(
+                                dict.fromkeys(str(issue.get("code", "unverified_claim")) for issue in validation.issues)
+                            )
                             self._emit(
                                 "text_delta",
                                 {"delta": final_content, "iter": current_iter},
                             )
-                        elif buffer_text_output:
-                            self._emit(
-                                "text_delta",
-                                {"delta": final_content, "iter": current_iter},
-                            )
+                        else:
+                            if validation.rendered_answer is not None:
+                                trace.write_text_entry(
+                                    {"type": "verified_interpretation", "iter": current_iter},
+                                    field="content", value=final_content,
+                                    offload_kind=f"interpretation-{current_iter}",
+                                )
+                                final_content = validation.rendered_answer
+                            if buffer_text_output:
+                                self._emit(
+                                    "text_delta",
+                                    {"delta": final_content, "iter": current_iter},
+                                )
                     should_continue_goal = False
                     continuation_snapshot = None
                     _max_cont = _goal_max_continuations()
@@ -1951,8 +2002,15 @@ class AgentLoop:
                     not self._cancel_event.is_set()
                     and self._tool_progress.finish_iteration()
                 ):
-                    no_progress_reason = "no_progress: " + RECOVERY_MESSAGE
-                    final_content = RECOVERY_MESSAGE
+                    limitation = (self._grounding.market_data_limitation() or self._grounding.daily_move_summary()
+                                  if self._grounding else "")
+                    if limitation:
+                        final_content = limitation
+                        self._released_fallback = True
+                        self._released_fallback_reason = "Research stopped after repeated attempts with no new observations."
+                    else:
+                        no_progress_reason = "no_progress: " + RECOVERY_MESSAGE
+                        final_content = RECOVERY_MESSAGE
                     trace.write(
                         {
                             "type": "no_progress",
@@ -2207,7 +2265,14 @@ class AgentLoop:
         """
         compact_requested = False
         focus_topic = ""
+        batch_message_start = len(messages)
         execution_plan: list[tuple[Any, str | None]] = []
+        deferred_codes: dict[str, list[str]] = {}
+        if self._cancel_event.is_set() or self._budget_stop_reason:
+            return compact_requested, focus_topic
+        previous_locks = set(self._grounding.authorized_symbols) if self._grounding else set()
+        previous_status = self._grounding.identity_status if self._grounding else "not_required"
+        tool_calls = self._prepare_market_reads(tool_calls, context, trace, react_trace, iteration)
         batch_authorized_symbols = (
             set(self._grounding.authorized_symbols)
             if self._grounding is not None
@@ -2220,7 +2285,7 @@ class AgentLoop:
         )
 
         # Cancelled before this turn's tools ran — skip execution entirely.
-        if self._cancel_event.is_set():
+        if self._cancel_event.is_set() or self._budget_stop_reason:
             return compact_requested, focus_topic
 
         for tc in tool_calls:
@@ -2234,6 +2299,23 @@ class AgentLoop:
 
             tool_def = self.registry.get(tc.name)
             is_repeatable = tool_def.repeatable if tool_def else False
+            market_field = getattr(tool_def, "market_identity_argument", None)
+            if (market_field and self._grounding is not None
+                    and batch_identity_status == "locked" and self._is_tool_readonly(tc.name)):
+                ready, deferred = self._grounding.partition_market_codes(
+                    tc.arguments.get(market_field), batch_authorized_symbols,
+                )
+                if ready and deferred:
+                    trace.write({
+                        "type": "market_data_scope", "iter": iteration, "call_id": tc.id,
+                        "requested": redact_payload(tc.arguments[market_field]),
+                        "eligible": redact_payload(ready), "deferred": redact_payload(deferred),
+                    })
+                    deferred_codes[tc.id] = redact_payload(deferred)
+                    # Authorization, dedup, execution, cached reads and evidence must
+                    # all use the same subset. Keep the original assistant message intact.
+                    tc = copy.copy(tc)
+                    tc.arguments = {**tc.arguments, market_field: ready}
             # A None key means the arguments could not be canonicalised. The
             # deterministic cache treats that as 'never cache'; the blocking
             # gate must likewise treat it as 'never block', otherwise every
@@ -2270,13 +2352,18 @@ class AgentLoop:
                 react_trace.append({"type": "tool_skipped", "tool": tc.name})
                 continue
 
+            # Starting a resolver call marks the query unresolved. Remember
+            # which successful observation owned its decision before that.
+            prior_resolution = None
             if self._grounding is not None:
+                if tc.name == "search_symbol":
+                    prior_resolution = self._grounding.resolution_for_query(tc.arguments.get("query", ""))
                 authorization = self._grounding.authorize_tool_call(
                     tc.name,
                     tc.arguments,
-                    batch_authorized_symbols=batch_authorized_symbols,
+                    batch_authorized_symbols=batch_authorized_symbols if market_field else previous_locks,
                     call_id=tc.id,
-                    batch_identity_status=batch_identity_status,
+                    batch_identity_status=batch_identity_status if market_field else previous_status,
                 )
                 if not authorization.allowed:
                     execution_plan.append(
@@ -2309,6 +2396,18 @@ class AgentLoop:
                         cached = redact_tool_result(self._called_identical[cache_key])
                         self._called_identical[cache_key] = cached
                 if cached is not None:
+                    if self._grounding is not None and tc.name == "search_symbol":
+                        # A different lookup variant or a later conflicting
+                        # result supersedes the cached payload's authority.
+                        if (prior_resolution is None
+                                or prior_resolution.status not in {"locked", "ambiguous", "not_found"}
+                                or self._successful_call_keys.get(prior_resolution.source_tool_call_id) != cache_key):
+                            execution_plan.append((tc, None))
+                            continue
+                        self._grounding.ingest_tool_result(
+                            tool_name=tc.name, arguments=tc.arguments, result=cached,
+                            call_id=prior_resolution.source_tool_call_id, success=True,
+                        )
                     messages.append(context.format_tool_result(
                         tc.id, tc.name, deliver_tool_result(cached, self.memory.run_dir, self.registry)
                     ))
@@ -2336,9 +2435,6 @@ class AgentLoop:
                     continue
 
             execution_plan.append((tc, None))
-
-        if not execution_plan:
-            return compact_requested, focus_topic
 
         # Preserve provider tool-result ordering. A synthetic blocked result
         # acts as a batch boundary, while adjacent authorized calls retain the
@@ -2384,7 +2480,124 @@ class AgentLoop:
             )
         flush_authorized_segment()
 
+        self._attach_resolution_feedback(tool_calls, messages[batch_message_start:])
+        if deferred_codes:
+            self._annotate_deferred_market_codes(messages[batch_message_start:], deferred_codes)
+
         return compact_requested, focus_topic
+
+    def _prepare_market_reads(self, calls: list, context: ContextBuilder, trace: TraceWriter,
+                              react_trace: list, iteration: int) -> list:
+        """Resolve missing identities in a separate runtime stage before freezing the read batch.
+
+        Only opted-in consumers can use these locks. An explicit resolver or
+        write in the batch keeps the usual same-batch ordering and guards.
+        """
+        ledger = self._grounding
+        if not ledger or not self._is_tool_readonly("search_symbol") or ledger.identity_status == "conflicting":
+            return calls
+        plans = {}
+        queries = {}
+        for call in calls:
+            tool = self.registry.get(call.name)
+            field = getattr(tool, "market_identity_argument", None)
+            if call.name == "search_symbol" or not self._is_tool_readonly(call.name):
+                return calls
+            if not field:
+                continue
+            value = call.arguments.get(field)
+            values = value if isinstance(value, list) else [value]
+            if not all(isinstance(item, str) and item.strip() for item in values):
+                continue
+            plans[call.id] = (field, values)
+            for item in values:
+                if ledger.requires_market_lookup(item):
+                    queries.setdefault(item.strip().casefold(), item.strip())
+        # A large basket can consume an entire research run on resolver calls.
+        # Limit speculative work per turn; unresolved rows retain normal
+        # per-symbol deferral and can be explicitly requested in later turns.
+        for query in list(queries.values())[:4]:
+            if self._cancel_event.is_set() or self._budget_stop_reason:
+                return calls
+            if not ledger.requires_market_lookup(query):
+                continue  # An earlier lookup in this stage already established the listing.
+            lookup = ToolCallRequest(f"lookup_{uuid4().hex}", "search_symbol", {"query": query})
+            trace.write({"type": "market_read_preflight", "iter": iteration, "call_id": lookup.id,
+                         "consumers": [cid for cid, (_, values) in plans.items()
+                                       if any(v.strip().casefold() == query.casefold() for v in values)]})
+            self._execute_single(lookup, context, [], trace, react_trace, iteration, identity_preflight=True)
+            self._pending_tool_observations.discard(lookup.id)
+        prepared = []
+        for call in calls:
+            if call.id not in plans:
+                prepared.append(call)
+                continue
+            field, values = plans[call.id]
+            resolved = [ledger.confirmed_market_symbol(value) or value for value in values]
+            if resolved != values:
+                trace.write({"type": "market_read_identity", "iter": iteration, "call_id": call.id,
+                             "requested": redact_payload(values), "resolved": redact_payload(resolved)})
+                call = copy.copy(call)
+                canonical = resolved if isinstance(call.arguments[field], list) else resolved[0]
+                call.arguments = {**call.arguments, field: canonical}
+            prepared.append(call)
+        return prepared
+
+    def _attach_resolution_feedback(self, tool_calls: list, batch_messages: list) -> None:
+        """Publish the final batch verdict to the next model turn's tool views."""
+        if self._grounding is None:
+            return
+        queries = {tc.id: tc.arguments.get("query", "") for tc in tool_calls if tc.name == "search_symbol"}
+        if not queries:
+            return
+        # A global conflict also blocks previously locked symbols. Compute
+        # this after every sibling result so parallel resolvers agree.
+        status = self._grounding.identity_status
+        allowed = sorted(self._grounding.authorized_symbols) if status == "locked" else []
+        for message in batch_messages:
+            call_id = message.get("tool_call_id")
+            if call_id not in queries or message.get("name") != "search_symbol":
+                continue
+            record = self._grounding.resolution_for_query(queries[call_id])
+            try:
+                view = json.loads(message["content"])
+            except ValueError:
+                # The bounded delivery can be a truncated prefix if the full
+                # artifact could not be saved. Keep its truncation notice.
+                view = None
+            if not isinstance(view, dict):
+                view = {"_preview": message["content"]}
+            view["_resolution"] = {
+                "query_status": record.status if record else "unresolved",
+                "resolved_symbol": record.symbol if record and record.status == "locked" else None,
+                "run_status": status,
+                "available_for_next_call": allowed,
+            }
+            message["content"] = json.dumps(view, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _annotate_deferred_market_codes(messages: list, deferred: dict[str, list[str]]) -> None:
+        """Attach skipped names only to the model view, never to a successful evidence record."""
+        for message in reversed(messages):
+            if message.get("role") != "tool" or message.get("tool_call_id") not in deferred:
+                continue
+            codes = deferred.pop(message["tool_call_id"])
+            content = message["content"]
+            try:
+                payload = json.loads(content)
+            except ValueError:
+                payload = None
+            if not isinstance(payload, dict):
+                payload = {"_result_preview": content}
+            payload["_deferred_codes"] = codes
+            payload["_deferred_reason"] = (
+                "These symbols were not locked before this batch and were not fetched. "
+                "For any required by the user, call search_symbol for each, then fetch "
+                "their quotes on a later turn. Optional comparators may be omitted."
+            )
+            message["content"] = json.dumps(payload, ensure_ascii=False)
+            if not deferred:
+                break
 
     def _record_blocked_tool_call(
         self,
@@ -2440,6 +2653,9 @@ class AgentLoop:
             react_trace,
             iteration,
             update_memory=False,
+            needs_resolution=json.loads(result).get("error_code") in {
+                "identity_required", "identity_mismatch", "identity_conflict",
+            },
         )
 
     def _batch_execute(
@@ -2556,6 +2772,8 @@ class AgentLoop:
         trace: TraceWriter,
         react_trace: list,
         iteration: int,
+        *,
+        identity_preflight: bool = False,
     ) -> None:
         """Execute a single tool call.
 
@@ -2584,6 +2802,21 @@ class AgentLoop:
         logger.info(f"Tool call: {tc.name}({list(args.keys())})")
 
         result, elapsed_ms = self._invoke_tool(tc.name, args, call_id=tc.id)
+        if identity_preflight:
+            # The marker travels with the resolver evidence so later recovery
+            # applies the same selection policy as this read. Search failures
+            # keep the original provider error. Internal reads have no
+            # assistant tool_call_id in the conversation, only in the trace.
+            try:
+                payload = json.loads(result)
+            except (ValueError, TypeError):
+                payload = None
+            if isinstance(payload, dict) and payload.get("ok") is True:
+                payload["_require_exact_identity"] = True
+                data = payload.get("data")
+                if not isinstance(data, dict) or str(data.get("query", "")).casefold() != str(args["query"]).casefold():
+                    payload = {"ok": False, "error": "Resolver returned a different query."}
+                result = json.dumps(payload, ensure_ascii=False)
 
         self._finalize_tool_result(tc, result, elapsed_ms, context, messages, trace, react_trace, iteration)
 
@@ -3036,6 +3269,7 @@ class AgentLoop:
         iteration: int,
         *,
         update_memory: bool = True,
+        needs_resolution: bool = False,
     ) -> None:
         """Record a tool result: update memory, append message, write trace, emit event.
 
@@ -3049,6 +3283,7 @@ class AgentLoop:
             react_trace: React trace list.
             iteration: Current iteration.
             update_memory: Whether this call reached the tool implementation.
+            needs_resolution: Local identity preflight held the call.
         """
         if update_memory:
             self._update_memory(tc.name)
@@ -3058,6 +3293,8 @@ class AgentLoop:
 
         # The model, grounding ledger and replay cache share the safe value.
         result = redact_tool_result(result)
+        if tc.name == "get_market_data":
+            result = _market_result_for_agent(result)
         success = _is_tool_success(result)
         if update_memory:
             self._tool_progress.record(
@@ -3114,7 +3351,27 @@ class AgentLoop:
                     self._identical_cached_at[cache_key] = _time.time()
 
         status = "ok" if success else "error"
+        outcome = "needs_resolution" if needs_resolution else "error"
+        if not success and not needs_resolution:
+            envelope = json.loads(result)
+            if (tc.name, envelope.get("error_code")) in (
+                ("get_market_data", "market_data_unavailable"), ("get_stock_news", "unsupported_news_market"),
+            ):
+                outcome = "no_data"
         truncated = deliver_tool_result(result, self.memory.run_dir, self.registry)
+        if success and tc.name == "get_market_data" and self._grounding is not None:
+            summary = self._grounding.daily_move_summary(call_id=tc.id)
+            if summary:
+                # Keep the original tool payload and its artifact hash intact.
+                # Attach the calculation to the model's JSON view only, also
+                # when that view is a receipt for the full series.
+                try:
+                    view = json.loads(truncated)
+                except ValueError:
+                    view = None
+                if isinstance(view, dict):
+                    view["_calculated_close_to_close"] = summary
+                    truncated = json.dumps(view, ensure_ascii=False, separators=(",", ":"))
         messages.append(context.format_tool_result(tc.id, tc.name, truncated))
         self._pending_tool_observations.add(tc.id)
 
@@ -3136,6 +3393,7 @@ class AgentLoop:
             {
                 "tool": tc.name,
                 "status": status,
+                **({"outcome": outcome} if not success else {}),
                 "elapsed_ms": elapsed_ms,
                 "preview": preview,
                 "call_id": tc.id,

@@ -291,12 +291,15 @@ class TestTheGateDoesNotKillCorrectAnswers:
 
         assert result.valid is True, result.issues
 
-    def test_a_percentage_on_an_unhandled_ticker_is_allowed(self, tmp_path: Path) -> None:
+    def test_observed_percentage_on_an_unhandled_ticker_needs_evidence(self, tmp_path: Path) -> None:
+        """A percentage is still a financial fact; date/count masks cannot exempt it."""
         result = _ledger(tmp_path).validate_final_answer(
             f"{_GROUNDED_ANSWER}\n600519.SH 年内涨约 12%。"
         )
 
-        assert result.valid is True, result.issues
+        assert result.valid is False
+        assert any(issue.get("code") == "unsourced_symbol_figures"
+                   and issue.get("symbol") == "600519.SH" for issue in result.issues)
 
     def test_a_calendar_date_on_an_unhandled_ticker_is_allowed(self, tmp_path: Path) -> None:
         result = _ledger(tmp_path).validate_final_answer(

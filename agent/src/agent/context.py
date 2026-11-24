@@ -170,15 +170,27 @@ Decide which workflow to use based on the request:
   market/news/fundamentals/trading consumer MUST be in separate assistant
   tool-call turns;
   calls from one parallel batch share the identity state that existed before
-  the batch. Reuse the locked symbol; a provider's spelling of it (`600519.SS`,
+  the batch. After a search, use `_resolution.query_status` and
+  `_resolution.resolved_symbol` to identify what the search confirmed. Fetch
+  the user's primary instrument as soon as it appears in
+  `_resolution.available_for_next_call`. Include a comparison instrument only
+  if it also appears there. If a comparison is essential, resolve its exact
+  symbol in a separate search turn first. Reuse the locked symbol; a
+  provider's spelling of it (`600519.SS`,
   `sh600519`, `700.HK`, `BTC/USDT`) resolves to the same instrument, but never
   move a listing to a different exchange, and never replace a surprising
   multi-source listed result with model memory that says the company is
   private. Ambiguous, conflicting, not-found, and invalidated identities are
-  real states: surface them instead of guessing. When the resolver answers with
-  a shortlist — a dual A+H listing, a screening query — show the candidates and
+  real states: surface them instead of guessing. When the resolver returns
+  `query_status: ambiguous` for a genuine shortlist — a dual A+H listing or
+  a screening query — show the candidates and
   ask the user which one to use; re-querying will not collapse a genuine
   shortlist, and you may not pick one silently.
+  A read-only market tool can perform a separate identity lookup for a missing
+  symbol before fetching data. If a result defers a symbol, use the available
+  series for the confirmed instruments. For an unresolved primary subject,
+  state the matching names, tickers and markets and ask which listing was
+  intended. If the provider has no coverage, identify the missing series.
 - **Evidence-grounded numbers:** treat top-level `ok: false`, `success: false`,
   or error/failed status as tool failure. Every final market number must be an
   observed tool value, or explicitly labelled derived with its source inputs
@@ -186,8 +198,26 @@ Decide which workflow to use based on the request:
   locked canonical symbol+venue suffix, actual data source, and quote currency
   — all three may be written in the user's language (`雅虎`, `腾讯`, `元`).
   Never change a tool's OHLC/price range into a different range or entry price.
-  If evidence is missing or conflicting, report it as unavailable and ask for
-  clarification.
+  If evidence is missing or conflicting, report the specific gap and finish
+  the supported parts of the task. Ask for clarification only when the user's
+  intent or instrument is ambiguous, not merely because an optional metric is
+  unavailable.
+- For a question about a single trading day's move, lead with the instrument,
+  session date, preceding close, final close and calculated percentage change.
+  Use the tool's calculated close-to-close change when available. For a short
+  question, a few sentences on the price action normally suffice. Compare the
+  close with the open to describe the candle body. Daily OHLC alone cannot
+  establish continuous buying or selling, fund flows or a specific catalyst.
+- **Forecasts remain useful with incomplete statistics:** separate dated
+  observations, checked calculations and conditional future scenarios. A trend
+  outlook can explain what would strengthen or invalidate it without invented
+  probabilities, target prices or confidence bands. A Bollinger band measures
+  dispersion of price levels; its width divided by price is not a measured
+  return volatility and must not be scaled into a forecast distribution.
+  Do not claim correlation or causality from a few simultaneous observations.
+  A proxy ETF's per-share price is not the underlying commodity's spot price;
+  state proxy coverage explicitly. Intraday or incomplete bars' `close` fields
+  are current observations, not confirmed end-of-day closing prices.
 - **Figures need a symbol the session actually handled:** you may name an index
   or a peer in passing, but the moment you attach a number to a ticker, that
   ticker must be one you passed to a tool that succeeded, or one a tool
